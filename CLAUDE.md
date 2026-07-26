@@ -5,11 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Test Commands
 
 ```bash
-pio run                          # 编译
-pio run --target upload          # 烧录到开发板
-pio device monitor -b 9600       # 串口监视器 (9600 bps)
-pio run --target upload --target monitor  # 烧录并打开串口
-pio run -e esp32s3               # 用指定环境编译 (esp32-s3-devkitc-1)
+pio run                                    # 编译
+pio run --target upload                    # 烧录固件到开发板
+pio run --target uploadfs                  # 烧录 LittleFS 文件系统 (Web 前端)
+pio run --target upload_all                # 烧录固件 + LittleFS (一键)
+pio device monitor                         # 串口监视器 (115200 bps, 由 platformio.ini 配置)
+pio run --target upload --target monitor   # 烧录并打开串口
 ```
 
 没有单元测试 — 验证方式是通过串口观察发射日志输出，或使用频谱仪/RTL-SDR 确认射频输出。
@@ -104,6 +105,14 @@ main.cpp: 配置宏 (TX_ENCODING, TX_ADDR, TX_MSG ...)
 | GPIO11   | SDI    | SPI MOSI |
 | GPIO12   | SCLK   | SPI SCK |
 | GPIO13   | SDO    | SPI MISO |
+| GPIO4    | IRQ    | 中断 (轮询模式时接 -1) |
+
+### RF 天线开关
+
+| ESP32-S3 | 功能 |
+|----------|------|
+| GPIO2 | TX 使能 (发射模式) |
+| GPIO3 | RX 使能 (接收模式) |
 
 ### 频率配置
 
@@ -118,7 +127,7 @@ main.cpp: 配置宏 (TX_ENCODING, TX_ADDR, TX_MSG ...)
 
 ## 项目配置
 
-- `platformio.ini` — 两个环境: `4d_systems_esp32s3_gen4_r8n16` (默认) 和 `esp32s3` (devkit)
+- `platformio.ini` — 环境: `luatos-esp32s3` (ESP32-S3, 16MB Flash, PSRAM, LittleFS)
 - `Si446x_config.h` — 编译时引脚默认值 (可被 `Si446x_setPins()` 覆盖)
 - `radio_config.h` — WDS 3.2.11.0 生成的射频配置文件 (1200 bps, ±4.5 kHz FSK)
 - `radio_config/` — 子目录包含 Rev B1 / C2 的多种配置 (FLEX/POCSAG, 不同速率)
@@ -126,7 +135,7 @@ main.cpp: 配置宏 (TX_ENCODING, TX_ADDR, TX_MSG ...)
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **BeeperTX** (1676 symbols, 2951 relationships, 148 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **BeeperTX** (1677 symbols, 2952 relationships, 148 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
