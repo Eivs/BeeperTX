@@ -63,6 +63,13 @@
     try {
       const resp = await window.API.transmit(msg);
       if (!resp.code) {
+        // 显示完整发送参数 (来自服务器的 config)
+        if (resp.enc) {
+          var ph = resp.phase || 'NRM';
+          var tp = resp.type || 'ALPHA';
+          var tn = resp.tone || 'D';
+          log(resp.enc + ' ' + ph + ' ' + tp + ' tone=' + tn + ' addr=' + resp.addr + ' ' + (resp.freq/1000).toFixed(3) + 'MHz ' + resp.baud + 'bps', 'rx');
+        }
         log('Sent OK', 'rx');
       } else {
         log('Send failed: ' + (resp.detail || 'unknown'), 'error');

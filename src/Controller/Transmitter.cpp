@@ -16,7 +16,10 @@ static const int TX_SETTLE_MS   = 10;  // Direct TX PLL 锁定等待
 // 构造 / 析构
 // ============================================================
 Transmitter::Transmitter(int txPin)
-  : m_txPin(txPin) {}
+  : m_txPin(txPin) {
+  pinMode(m_txPin, OUTPUT);
+  digitalWrite(m_txPin, LOW);
+}
 
 // ============================================================
 // 静态工具
@@ -119,7 +122,9 @@ void Transmitter::sendBytes(const uint8_t* data, size_t len, int bitTimeUs) {
 void Transmitter::sendPocsag(const Config& cfg) {
   // static: 缓冲区 (~5KB) 在 .bss 段, 而非栈上, 防止栈溢出
   static PocsagEncoder encoder;
-  bool invert = (cfg.phase == INVERTED);
+  // Si4463 的 FSK MARK/SPACE 极性与寻呼机解调器预期相反,
+  // 故 NORMAL = 基带反转以补偿硬件极性。
+  bool invert = (cfg.phase == NORMAL);
 
   // UTF-8 → GB2312 转换 (直接引用 String 内部 buffer, 避免 getBytes 拷贝)
   String gbStr;  // 保持生命周期覆盖 data 使用期
@@ -141,10 +146,12 @@ void Transmitter::sendPocsag(const Config& cfg) {
   int bt   = bitTimeUs(cfg.baudRate);
   int pre  = preambleBits(cfg.baudRate);
 
+  const char toneLetter = "ABCD"[cfg.tone & 3];
   const char* modeName = (cfg.msgType == NUMERIC) ? "NUM" : "ALPHA";
-  Serial.printf("TX[%d][POCSAG] addr=%llu tone=%d baud=%d %s \"%s\"\n",
-                m_txCount, cfg.address, cfg.tone, cfg.baudRate,
-                modeName, cfg.message);
+  const char* phaseName = (cfg.phase == INVERTED) ? "INV" : "NRM";
+  Serial.printf("TX[%d][POCSAG] addr=%llu tone=%c baud=%d %s %s \"%s\"\n",
+                m_txCount, cfg.address, toneLetter, cfg.baudRate,
+                modeName, phaseName, cfg.message);
 
   Serial.print('.');
   enterTx();
@@ -160,6 +167,8 @@ void Transmitter::sendPocsag(const Config& cfg) {
 // ============================================================
 void Transmitter::sendFlex(const Config& cfg) {
   FlexEncoder encoder;
+  // Si4463 FSK 极性补偿: NORMAL = 反转基带
+  bool invert = (cfg.phase == NORMAL);
   int bt = bitTimeUs(cfg.baudRate);
   size_t len;
 
@@ -204,9 +213,10 @@ void Transmitter::sendFlex(const Config& cfg) {
   }
 
   const char* modeName = isNum ? "NUM" : "ALPHA(CN)";
-  Serial.printf("TX[%d][FLEX] addr=%llu baud=%d %s \"%s\"\n",
+  const char* phaseName = (cfg.phase == INVERTED) ? "INV" : "NRM";
+  Serial.printf("TX[%d][FLEX] addr=%llu baud=%d %s %s \"%s\"\n",
                 m_txCount, cfg.address, cfg.baudRate,
-                modeName, cfg.message);
+                modeName, phaseName, cfg.message);
 
   if (encoder.hasError()) {
     Serial.printf("  encode error: %s\n", encoder.getErrorString());
@@ -216,7 +226,21 @@ void Transmitter::sendFlex(const Config& cfg) {
 
   Serial.print('.');
   enterTx();
-  sendBytes(encoder.getData(), len, bt);
+  if (invert) {
+    // 反相: 复制缓冲区并逐字节取反, 然后走 sendBytes 精确时序
+    uint8_t* invBuf = (uint8_t*)malloc(len);
+    if (invBuf) {
+      const uint8_t* src = encoder.getData();
+      for (size_t i = 0; i < len; i++) invBuf[i] = ~src[i];
+      sendBytes(invBuf, len, bt);
+      free(invBuf);
+    } else {
+      // malloc 失败, 直接发正相
+      sendBytes(encoder.getData(), len, bt);
+    }
+  } else {
+    sendBytes(encoder.getData(), len, bt);
+  }
   exitTx();
   Serial.println(" OK");
   m_txCount++;

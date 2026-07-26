@@ -56,11 +56,11 @@ public:
    */
   struct Config {
     Encoding   encoding   = POCSAG;          //!< POCSAG / FLEX
-    Phase      phase      = NORMAL;           //!< 正相 / 反相
+    Phase      phase      = NORMAL;           //!< 正相 / 反相 (根据射频配置和寻呼机适配情况选择)
     int        baudRate   = 1200;             //!< 码率: 512/1200/1600/2400/3200/6400
     Tone       tone       = TONE_A;           //!< 铃音
     uint64_t   address    = 1000;             //!< 寻呼机地址
-    const char* message   = "";               //!< 消息内容 (UTF-8)
+    char       message[256] = "";             //!< 消息内容 (UTF-8, 最大 255 字节)
     MsgType    msgType    = ALPHANUMERIC;//!< 数字 / 汉字
   };
 

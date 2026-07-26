@@ -238,6 +238,11 @@ void api_setTransmitter(Transmitter* tx);
 void api_setWiFiManager(WiFiManager* wifi);
 
 /**
+ * @brief 获取当前发射配置的快照 (用于 Web/串口日志)。
+ */
+TxConfig api_getConfig();
+
+/**
  * @brief 获取发射日志环形缓冲区 (JSON 行数组)。
  * @param buf  输出缓冲区
  * @param size 缓冲区大小

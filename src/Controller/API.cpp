@@ -168,7 +168,7 @@ static Transmitter::Config makeTxConfig() {
   c.baudRate = s_config.baudRate;
   c.tone     = static_cast<Transmitter::Tone>(s_config.tone);
   c.address  = s_config.address;
-  c.message  = s_config.message;
+  memcpy(c.message, s_config.message, sizeof(c.message));
   c.msgType  = (s_config.msgType == MsgType::NUMERIC)
                    ? Transmitter::NUMERIC : Transmitter::ALPHANUMERIC;
   return c;
@@ -340,6 +340,10 @@ void api_setWiFiManager(WiFiManager* wifi) {
   s_wifi = wifi;
 }
 
+TxConfig api_getConfig() {
+  return s_config;
+}
+
 void api_triggerScan() {
   s_pendingScan = true;
 }
@@ -374,6 +378,25 @@ void api_loop() {
     if (msgOverride) {
       strncpy(savedMsg, s_config.message, sizeof(savedMsg) - 1);
       strncpy(s_config.message, s_pendingTxMsg, sizeof(s_config.message) - 1);
+    }
+
+    // 日志: 完整发送参数
+    {
+      const char* encName = (s_config.encoding == EncodingType::POCSAG) ? "POCSAG" : "FLEX";
+      const char* phName  = (s_config.phase == PhaseType::NORMAL) ? "NRM" : "INV";
+      const char* tpName  = (s_config.msgType == MsgType::NUMERIC) ? "NUM" : "ALPHA";
+      char buf[256];
+      char toneL = "ABCD"[(uint8_t)s_config.tone & 3];
+      snprintf(buf, sizeof(buf),
+               "TX> %s %s %s addr=%lu freq=%ukHz baud=%u pw=%u tone=%c \"%s\"",
+               encName, phName, tpName,
+               (unsigned long)s_config.address,
+               s_config.freqKHz,
+               s_config.baudRate,
+               s_config.txPower,
+               toneL,
+               s_config.message);
+      api_log(buf);
     }
 
     s_tx->send(makeTxConfig());
@@ -443,7 +466,7 @@ void api_dispatch(const CmdRequest* req, CmdResponse* resp) {
 void api_init() {
   // 加载默认配置 (后续可从 NVS 恢复)
   s_config.encoding  = EncodingType::POCSAG;
-  s_config.phase     = PhaseType::INVERTED;
+  s_config.phase     = PhaseType::NORMAL;
   s_config.tone      = ToneType::TONE_D;
   s_config.msgType   = MsgType::ALPHANUMERIC;
   s_config.freqKHz   = 152675;

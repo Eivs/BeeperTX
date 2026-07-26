@@ -283,6 +283,8 @@ void SerialConsole::cmdTx(const char* args) {
   api_dispatch(&req, &resp);
 
   if (resp.code == RespCode::OK) {
+    // api_loop() 会在发送前通过 api_log() 打印完整参数,
+    // 此处只需回显确认
     m_stream.print(F("OK TX count="));
     m_stream.println(resp.detail);
   } else {

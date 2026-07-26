@@ -321,8 +321,25 @@ void WebServer::onTransmit(AsyncWebServerRequest* req, uint8_t* data, size_t len
   api_dispatch(&r, &resp);
 
   if (resp.code == RespCode::OK) {
+    // 获取当前配置并返回给前端
+    TxConfig cfg = api_getConfig();
+    const char* enc = (cfg.encoding == EncodingType::POCSAG) ? "POCSAG" : "FLEX";
+    const char* ph  = (cfg.phase == PhaseType::NORMAL) ? "NRM" : "INV";
+    const char* tp  = (cfg.msgType == MsgType::NUMERIC) ? "NUM" : "ALPHA";
+    char toneL = "ABCD"[(uint8_t)cfg.tone & 3];
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+             "{\"code\":0,\"detail\":\"ok\","
+             "\"enc\":\"%s\",\"phase\":\"%s\",\"type\":\"%s\","
+             "\"addr\":%lu,\"freq\":%u,\"baud\":%u,\"pw\":%u,\"tone\":\"%c\"}",
+             enc, ph, tp,
+             (unsigned long)cfg.address,
+             cfg.freqKHz,
+             cfg.baudRate,
+             cfg.txPower,
+             toneL);
+    req->send(200, "application/json", buf);
     api_log("WEB TX sent");
-    req->send(200, "application/json", "{\"code\":0,\"detail\":\"ok\"}");
   } else {
     api_log("WEB TX: FAILED");
     req->send(400, "application/json", errorJson((int)resp.code, "tx failed"));
