@@ -1,0 +1,368 @@
+/* ============================================================
+   BeeperTX — Custom Dark Theme over terminal.css
+   ============================================================ */
+
+/* ---- CSS Variables ---- */
+:root {
+  --bg:         #0a0a14;
+  --bg-panel:   #111122;
+  --bg-input:   #0d0d1a;
+  --border:     #2d2d44;
+  --text:       #c9d1d9;
+  --text-dim:   #6e7681;
+  --primary:    #27ae60;
+  --primary-dim:#1a7d42;
+  --error:      #dc3545;
+  --error-dim:  #8b1a24;
+  --accent:     #58a6ff;
+  --warn:       #f0c040;
+  --font-mono:  "Fira Code", "Cascadia Code", "Courier New", monospace;
+  --font-ui:    "Roboto", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+
+  --global-font-size: 14px;
+  --background-color: var(--bg);
+  --font-color: var(--text);
+  --primary-color: var(--primary);
+  --secondary-color: var(--text-dim);
+  --error-color: var(--error);
+}
+
+/* ---- Base ---- */
+*, *::before, *::after { box-sizing: border-box; }
+
+body.terminal {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* ---- Status Bar ---- */
+#status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  flex-shrink: 0;
+  min-height: 36px;
+}
+
+.status-left .logo {
+  color: var(--primary);
+  font-weight: bold;
+  font-size: 14px;
+}
+
+.conn-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  background: var(--text-dim);
+}
+.conn-dot.connected { background: var(--primary); }
+.conn-dot.error { background: var(--error); }
+.conn-dot.ap { background: var(--warn); }
+
+.sep { color: var(--border); margin: 0 8px; }
+.hidden { display: none !important; }
+
+#loop-indicator {
+  color: var(--primary);
+  animation: pulse 1.2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ---- Main Layout ---- */
+.main-content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ---- Config Panel ---- */
+#config-panel {
+  width: 300px;
+  min-width: 300px;
+  overflow-y: auto;
+  padding: 12px;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+}
+
+.cfg-group {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.cfg-group legend {
+  color: var(--primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  padding: 0 6px;
+}
+
+.cfg-group .form-group {
+  margin-bottom: 0;
+}
+
+.form-row {
+  display: flex;
+  gap: 8px;
+}
+.form-row .form-group { flex: 1; }
+
+.cfg-group label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 2px;
+}
+
+.cfg-group input,
+.cfg-group select,
+.form-control {
+  width: 100%;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 5px 8px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.cfg-group input:focus,
+.form-control:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+/* ---- Button Groups ---- */
+.btn-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.btn-group-vert {
+  flex-direction: column;
+}
+
+.btn-group .btn {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-group .btn:hover {
+  background: #1a2a1a;
+  color: var(--text);
+  border-color: var(--primary-dim);
+}
+
+.btn-group .btn.active {
+  background: var(--primary-dim);
+  color: #fff;
+  border-color: var(--primary);
+}
+
+.btn-primary {
+  background: var(--primary) !important;
+  color: #fff !important;
+  border: none !important;
+  font-weight: bold;
+}
+.btn-primary:hover {
+  background: #219a52 !important;
+}
+
+.btn-error {
+  background: var(--error) !important;
+  color: #fff !important;
+  border: none !important;
+}
+.btn-error:hover {
+  background: #c01d2c !important;
+}
+
+.btn-ghost {
+  background: transparent !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-dim) !important;
+}
+.btn-ghost:hover {
+  color: var(--text) !important;
+  border-color: var(--text-dim) !important;
+}
+
+.btn-sm { padding: 2px 8px !important; font-size: 11px !important; }
+
+/* ---- Terminal View ---- */
+#terminal-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.terminal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 16px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.terminal-title {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--primary);
+}
+
+.terminal-actions { display: flex; gap: 6px; }
+
+#terminal-output {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+#terminal-output .line {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+#terminal-output .line.tx    { color: #93c5fd; }  /* 蓝色 — 发射 */
+#terminal-output .line.rx    { color: #86efac; }  /* 绿色 — 接收/成功 */
+#terminal-output .line.error { color: #fca5a5; }  /* 红色 — 错误 */
+#terminal-output .line.warn  { color: #fcd34d; }  /* 黄色 — 警告 */
+#terminal-output .line.info  { color: #c4b5fd; }  /* 紫色 — 信息 */
+#terminal-output .line.system{ color: var(--text-dim); }
+
+/* ---- Send Area ---- */
+.send-area {
+  display: flex;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.send-area input {
+  flex: 1;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.send-area input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+/* ---- Modal ---- */
+.modal {
+  position: fixed;
+  top: 0; left: 0;
+  right: 0; bottom: 0;
+  background: rgba(0,0,0,0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 24px;
+  width: 380px;
+  max-width: 90vw;
+}
+
+.modal-card h2 {
+  margin: 0 0 16px;
+  font-family: var(--font-mono);
+  color: var(--primary);
+  font-size: 16px;
+}
+
+.modal-card .form-group {
+  margin-bottom: 12px;
+}
+.modal-card label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.modal-card input,
+.modal-card select {
+  width: 100%;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.modal-card input:focus,
+.modal-card select:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+/* ---- Responsive ---- */
+@media (max-width: 768px) {
+  .main-content {
+    flex-direction: column;
+  }
+  #config-panel {
+    width: 100%;
+    min-width: unset;
+    max-height: 40vh;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  #terminal-view {
+    min-height: 50vh;
+  }
+}

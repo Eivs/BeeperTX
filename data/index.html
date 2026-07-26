@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BeeperTX — POCSAG/FLEX Transmitter</title>
+  <link rel="stylesheet" href="/css/terminal.min.css">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="terminal">
+  <div id="app">
+    <!-- ====== 顶部状态栏 ====== -->
+    <header id="status-bar">
+      <div class="status-left">
+        <span class="logo">▌ BeeperTX</span>
+      </div>
+      <div class="status-center">
+        <span id="conn-dot" class="conn-dot"></span>
+        <span id="conn-text">Initializing...</span>
+      </div>
+      <div class="status-right">
+        <span id="wifi-ip">--</span>
+        <span class="sep">|</span>
+        <span>TX: <strong id="tx-count">0</strong></span>
+      </div>
+    </header>
+
+    <!-- ====== 主体: 配置面板 + 终端视图 ====== -->
+    <main class="main-content">
+      <!-- 左侧配置面板 -->
+      <aside id="config-panel">
+        <!-- 协议选择 -->
+        <fieldset class="cfg-group" id="group-encoding">
+          <legend>Protocol</legend>
+          <div class="btn-group" data-field="encoding">
+            <button class="btn btn-sm" data-value="pocsag">POCSAG</button>
+            <button class="btn btn-sm" data-value="flex">FLEX</button>
+          </div>
+        </fieldset>
+
+        <!-- 相位 -->
+        <fieldset class="cfg-group" id="group-phase">
+          <legend>Phase</legend>
+          <div class="btn-group" data-field="phase">
+            <button class="btn btn-sm" data-value="normal">NORMAL</button>
+            <button class="btn btn-sm" data-value="inverted">INVERT</button>
+          </div>
+        </fieldset>
+
+        <!-- 铃音 -->
+        <fieldset class="cfg-group" id="group-tone">
+          <legend>Tone (POCSAG func)</legend>
+          <div class="btn-group" data-field="tone">
+            <button class="btn btn-sm" data-value="A">A</button>
+            <button class="btn btn-sm" data-value="B">B</button>
+            <button class="btn btn-sm" data-value="C">C</button>
+            <button class="btn btn-sm" data-value="D">D</button>
+          </div>
+        </fieldset>
+
+        <!-- 消息类型 -->
+        <fieldset class="cfg-group" id="group-msgType">
+          <legend>Message Type</legend>
+          <div class="btn-group" data-field="msgType">
+            <button class="btn btn-sm" data-value="numeric">NUMERIC</button>
+            <button class="btn btn-sm" data-value="alphanumeric">ALPHA</button>
+          </div>
+        </fieldset>
+
+        <!-- 频率 -->
+        <fieldset class="cfg-group">
+          <legend>Frequency (kHz)</legend>
+          <div class="form-group">
+            <input type="number" id="inp-freq" placeholder="152675" min="119000" max="1050000" step="1">
+          </div>
+        </fieldset>
+
+        <!-- 码率 -->
+        <fieldset class="cfg-group" id="group-baud">
+          <legend>Baud Rate</legend>
+          <div class="btn-group" data-field="baudRate">
+            <button class="btn btn-sm" data-value="512">512</button>
+            <button class="btn btn-sm" data-value="1200">1200</button>
+            <button class="btn btn-sm" data-value="1600">1600</button>
+            <button class="btn btn-sm" data-value="2400">2400</button>
+            <button class="btn btn-sm" data-value="3200">3200</button>
+            <button class="btn btn-sm" data-value="6400">6400</button>
+          </div>
+        </fieldset>
+
+        <!-- 功率 -->
+        <fieldset class="cfg-group">
+          <legend>TX Power (0-127)</legend>
+          <div class="form-group">
+            <input type="number" id="inp-power" placeholder="127" min="0" max="127" step="1">
+          </div>
+        </fieldset>
+
+        <!-- 地址 -->
+        <fieldset class="cfg-group">
+          <legend>Address / CAPCODE</legend>
+          <div class="form-group">
+            <input type="number" id="inp-addr" placeholder="1000" min="0" max="2147483647" step="1">
+          </div>
+        </fieldset>
+
+        <!-- 预设管理 -->
+        <fieldset class="cfg-group">
+          <legend>Presets</legend>
+          <div class="btn-group" style="margin-top:8px;">
+            <button id="btn-preset-save" class="btn btn-ghost btn-sm">Save Preset</button>
+            <button id="btn-preset-load" class="btn btn-ghost btn-sm">Load</button>
+          </div>
+          <select id="sel-preset" class="form-control" style="margin-top:4px;width:100%;">
+            <option value="">-- saved presets --</option>
+          </select>
+        </fieldset>
+      </aside>
+
+      <!-- 右侧终端视图 -->
+      <section id="terminal-view">
+        <div class="terminal-header">
+          <span class="terminal-title">>_ Console</span>
+          <div class="terminal-actions">
+            <button id="btn-clear-log" class="btn btn-ghost btn-sm">Clear</button>
+            <button id="btn-wifi-config" class="btn btn-ghost btn-sm" title="WiFi Setup">⚙ WiFi</button>
+          </div>
+        </div>
+        <div id="terminal-output">
+          <div class="line info">BeeperTX ready. Type a message and press Send.</div>
+        </div>
+        <div class="send-area">
+          <input type="text" id="inp-message" placeholder="Input message (UTF-8)..." maxlength="255" autofocus>
+          <button id="btn-send" class="btn btn-primary">Transmit</button>
+        </div>
+      </section>
+    </main>
+
+    <!-- ====== WiFi 配网弹窗 ====== -->
+    <div id="wifi-modal" class="modal hidden">
+      <div class="modal-card">
+        <h2>⚙ WiFi Setup</h2>
+        <div id="wifi-status-text" class="terminal-alert"></div>
+        <div class="form-group">
+          <label>Scan & Select Network</label>
+          <button id="btn-wifi-scan" class="btn btn-default btn-sm">Scan</button>
+          <select id="sel-wifi-ssid" class="form-control" style="margin-top:4px;width:100%;">
+            <option value="">-- select or type below --</option>
+          </select>
+          <input type="text" id="inp-wifi-ssid" placeholder="SSID (manual)" style="margin-top:4px;width:100%;">
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="inp-wifi-pass" placeholder="WiFi password" style="width:100%;">
+        </div>
+        <div class="btn-group">
+          <button id="btn-wifi-connect" class="btn btn-primary">Connect & Reboot</button>
+          <button id="btn-wifi-cancel" class="btn btn-ghost">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/api-client.js"></script>
+  <script src="/js/config-panel.js"></script>
+  <script src="/js/terminal-view.js"></script>
+  <script src="/js/wifi-modal.js"></script>
+  <script src="/js/main.js"></script>
+</body>
+</html>
