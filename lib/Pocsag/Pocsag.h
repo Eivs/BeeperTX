@@ -81,22 +81,20 @@ private:
   unsigned long genMsgCode(unsigned long msgBin);
 
   /**
-   * @brief 将消息字节编码为 POCSAG 码字 (支持 GB2312 中文)。
-   * @param charBytes  输入消息字节 (ASCII < 0x80, GB2312 >= 0x80)
-   * @param length     输入长度
-   * @return POCSAG 功能码 (1=纯ASCII, 3=含GB2312中文)
+   * @brief 将消息字节编码为 POCSAG 消息码字 (支持 GB2312 中文)。
+   *         Tone (function) 由用户指定, 此处不自动检测。
    */
-  int deCodeAlpha(const uint8_t *charBytes, size_t length);
+  void deCodeAlpha(const uint8_t *charBytes, size_t length);
 
   /**
-   * @brief 将数字消息转换为 4-bit BCD POCSAG 码字。
-   * @param charBytes  输入消息字节
-   * @param length     输入长度
+   * @brief 将数字消息转换为 4-bit BCD POCSAG 消息码字。
    */
-  int deCodeNumeric(const uint8_t *charBytes, size_t length);
+  void deCodeNumeric(const uint8_t *charBytes, size_t length);
 
   /**
    * @brief 为一个寻呼机生成完整基带信号。
+   *         function 即是 WebUI 设置的 Tone (A=0, B=1, C=2, D=3),
+   *         直接写入地址码字的功能码位, 不自动覆盖。
    */
   void genSignal(unsigned long addr, int function, const uint8_t *msg,
                  size_t length, DisplayMode mode, bool invert);

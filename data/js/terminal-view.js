@@ -78,14 +78,21 @@
       log('Send error: ' + e.message, 'error');
     }
 
-    inp.value = '';
+    // 不清空 inp-message, 保留上次消息
     // 延迟恢复按钮 (TX 在主循环中异步执行, 约 1-2s)
     setTimeout(() => {
       sending = false;
       btn.disabled = false;
-      btn.textContent = 'Transmit';
+      btn.textContent = 'Send';
     }, 2500);
     inp.focus();
+  }
+
+  // ---- 清除消息输入框 ----
+  function clearMsg() {
+    const inp = document.getElementById('inp-message');
+    if (inp) inp.value = '';
+    inp?.focus();
   }
 
   // ---- 清除 ----
@@ -99,6 +106,7 @@
     initScroll();
 
     document.getElementById('btn-send')?.addEventListener('click', handleSend);
+    document.getElementById('btn-clear-msg')?.addEventListener('click', clearMsg);
     document.getElementById('btn-clear-log')?.addEventListener('click', clearLog);
 
     const inp = document.getElementById('inp-message');

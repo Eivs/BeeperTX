@@ -108,8 +108,9 @@
         <fieldset class="cfg-group">
           <legend>Presets</legend>
           <div class="btn-group" style="margin-top:8px;">
-            <button id="btn-preset-save" class="btn btn-ghost btn-sm">Save Preset</button>
+            <button id="btn-preset-save" class="btn btn-ghost btn-sm">Save</button>
             <button id="btn-preset-load" class="btn btn-ghost btn-sm">Load</button>
+            <button id="btn-preset-del" class="btn btn-ghost btn-sm" style="color:#e74c3c">Del</button>
           </div>
           <select id="sel-preset" class="form-control" style="margin-top:4px;width:100%;">
             <option value="">-- saved presets --</option>
@@ -130,8 +131,9 @@
           <div class="line info">BeeperTX ready. Type a message and press Send.</div>
         </div>
         <div class="send-area">
-          <input type="text" id="inp-message" placeholder="Input message (UTF-8)..." maxlength="255" autofocus>
-          <button id="btn-send" class="btn btn-primary">Transmit</button>
+          <input type="text" id="inp-message" placeholder="Input message..." maxlength="255" autofocus>
+          <button id="btn-send" class="btn btn-primary">Send</button>
+          <button id="btn-clear-msg" class="btn btn-ghost btn-sm">Clear</button>
         </div>
       </section>
     </main>

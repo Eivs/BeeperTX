@@ -2,7 +2,7 @@
 
 ### 一、帧结构总览
 
-POCSAG 一帧 (Batch) 的结构为 [[lib/Pocsag/Pocsag.cpp:291-372]]：
+POCSAG 一帧 (Batch) 的结构为 [[lib/Pocsag/Pocsag.cpp:285-361]]：
 
 ```
 ┌──────────┬──────────┬──────────────────┬──────────────────┬──────────────────────┐
@@ -56,7 +56,7 @@ Bit:  31    30..11      10..1      0
 - **bit10..1** — BCH(31,21) 校验码
 - **bit0** — 偶校验位
 
-### 四、编码流程 (`genSignal()`) [[lib/Pocsag/Pocsag.cpp:291-372]]
+### 四、编码流程 (`genSignal()`) [[lib/Pocsag/Pocsag.cpp:285-361]]
 
 ```
 genSignal(addr, func, msg, len, mode, invert)
@@ -86,7 +86,7 @@ genSignal(addr, func, msg, len, mode, invert)
   └─ 6. invert=true → 全部码字取反
 ```
 
-### 五、Alphanumeric 编码 (`deCodeAlpha`) [[lib/Pocsag/Pocsag.cpp:165-219]]
+### 五、Alphanumeric 编码 (`deCodeAlpha`) [[lib/Pocsag/Pocsag.cpp:163-215]]
 
 字符以 **7-bit LSB-first 位反转** 编码，每 20 bit 打包成一个消息码字：
 
@@ -98,9 +98,9 @@ genSignal(addr, func, msg, len, mode, invert)
 | `0x0F` (SI) | 自动插入 — 切换英文模式 |
 | `0x04` (EOT) | 消息结束符 — 自动追加 |
 
-控制字符自动插入逻辑 [[lib/Pocsag/Pocsag.cpp:176-196]]：寻呼机默认中文模式，遇 ASCII 字节自动插 `0x0F`，遇 GB2312 字节自动插 `0x0E`。
+控制字符自动插入逻辑 [[lib/Pocsag/Pocsag.cpp:174-194]]：寻呼机默认中文模式，遇 ASCII 字节自动插 `0x0F`，遇 GB2312 字节自动插 `0x0E`。
 
-### 六、Numeric 编码 (`deCodeNumeric`) [[lib/Pocsag/Pocsag.cpp:249-282]]
+### 六、Numeric 编码 (`deCodeNumeric`) [[lib/Pocsag/Pocsag.cpp:245-277]]
 
 4-bit BCD 映射表：
 

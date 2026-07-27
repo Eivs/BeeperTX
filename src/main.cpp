@@ -120,7 +120,7 @@ void setup() {
 
   Serial.println(F("\n"
     "╔══════════════════════════════════════════╗\n"
-    "║       BeeperTX — POCSAG/FLEX     ║\n"
+    "║       BeeperTX — POCSAG/FLEX             ║\n"
     "╚══════════════════════════════════════════╝"));
   Serial.printf("Build: %s %s\n\n", __DATE__, __TIME__);
 

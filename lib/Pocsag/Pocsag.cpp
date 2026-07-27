@@ -151,18 +151,16 @@ static void packBits(unsigned long &msgBin, int &bitCount,
 // ============================================================================
 // Alphanumeric 消息编码 (中文寻呼机: 7-bit POCSAG + 控制字符)
 //
-// 中文寻呼机编码方式 (func=3, TONE_D):
+// 中文寻呼机编码方式:
 //   - 默认英文模式 (CCITT No.5, 7-bit LSB-first)
 //   - \x0E (Shift Out) 切换到中文 GB2312 模式
 //   - \x0F (Shift In) 切回英文模式
 //   - \x04 (EOT) 消息结束符
 //   - GB2312/ASCII 统一使用 7-bit 位反转编码
 //   - 参考: GB2312-80, CCITT No.5
-//
-// 返回: POCSAG 功能码 (固定 3 = TONE_D)
 // ============================================================================
 
-int PocsagEncoder::deCodeAlpha(const uint8_t *charBytes, size_t length) {
+void PocsagEncoder::deCodeAlpha(const uint8_t *charBytes, size_t length) {
 
   memset(m_msgCode, 0, sizeof(m_msgCode));
 
@@ -214,8 +212,6 @@ int PocsagEncoder::deCodeAlpha(const uint8_t *charBytes, size_t length) {
       break;
     }
   }
-
-  return 3; // 固定 func=3 (TONE_D)
 }
 
 // ============================================================================
@@ -246,7 +242,7 @@ static uint8_t numericToBcd(char c) {
 // Numeric 消息编码 (4-bit BCD, 标准 POCSAG)
 // ============================================================================
 
-int PocsagEncoder::deCodeNumeric(const uint8_t *charBytes, size_t length) {
+void PocsagEncoder::deCodeNumeric(const uint8_t *charBytes, size_t length) {
 
   memset(m_msgCode, 0, sizeof(m_msgCode));
 
@@ -277,15 +273,13 @@ int PocsagEncoder::deCodeNumeric(const uint8_t *charBytes, size_t length) {
       break;
     }
   }
-
-  return 0; // POCSAG 标准: 数字消息 func=0
 }
 
 // ============================================================================
 // 为一个寻呼机生成完整基带信号
 //
-// 对于 ALPHANUMERIC 模式, 自动检测内容类型并设置正确的功能码:
-//   纯 ASCII → func=1,  含 GB2312 → func=3
+// function 由用户通过 WebUI 的 Tone 设置指定 (A=0, B=1, C=2, D=3),
+// 直接写入地址码字的功能码位, 不自动覆盖。
 // ============================================================================
 
 void PocsagEncoder::genSignal(unsigned long addr, int function,
@@ -298,25 +292,20 @@ void PocsagEncoder::genSignal(unsigned long addr, int function,
   genPreamble();
 
   // ---- 编码消息 ----
-  int detectedFunc = function; // 默认使用用户指定的功能码
   switch (mode) {
-  case MODE_NUMERIC: {
-    int numericFunc = deCodeNumeric(msg, length);
-    detectedFunc = numericFunc;
+  case MODE_NUMERIC:
+    deCodeNumeric(msg, length);
     break;
-  }
   case MODE_ALPHANUMERIC:
-  default: {
-    int autoFunc = deCodeAlpha(msg, length);
-    detectedFunc = autoFunc;
+  default:
+    deCodeAlpha(msg, length);
     break;
-  }
   }
 
   // ---- 计算地址所在的帧/槽位 ----
   uint8_t frameNum = addr & 0x07;
   uint8_t addrSlot = frameNum * 2;
-  unsigned long addrWord = genAddrCode(addr, detectedFunc);
+  unsigned long addrWord = genAddrCode(addr, function);  // 使用用户指定的 Tone
 
   // ---- 组装批次 ----
   int msgIdx = 0;

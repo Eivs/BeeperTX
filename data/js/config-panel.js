@@ -45,6 +45,44 @@
         updateField(cfg.field, val);
       });
     });
+
+    // 编码切换 → 自动设置对应默认值
+    const encGroup = document.querySelector('.btn-group[data-field="encoding"]');
+    if (encGroup) {
+      encGroup.addEventListener('click', async (e) => {
+        const btn = e.target.closest('button[data-value]');
+        if (!btn) return;
+        const enc = btn.dataset.value;
+        // 稍后等后端确认后再更新默认值
+        setTimeout(() => applyEncodingDefaults(enc), 100);
+      });
+    }
+  }
+
+  /** 根据编码切换设置 Polar/Tone/Baud 默认值 */
+  async function applyEncodingDefaults(enc) {
+    const patch = {};
+    if (enc === 'pocsag') {
+      patch.phase    = 'normal';
+      patch.tone     = 'A';
+      patch.baudRate = 1200;
+    } else if (enc === 'flex') {
+      patch.phase    = 'inverted';
+      patch.tone     = 'D';
+      patch.baudRate = 1600;
+    } else return;
+    try {
+      const resp = await window.API.setConfig(patch);
+      if (!resp.code) {
+        // 本地即时更新 UI (不需要等待 refreshPanel)
+        setBtnGroup('phase',    patch.phase);
+        setBtnGroup('tone',     patch.tone);
+        setBtnGroup('baudRate', String(patch.baudRate));
+        window.Terminal.log(`encoding=${enc}: applied defaults`, 'rx');
+      }
+    } catch(e) {
+      window.Terminal.log(`encoding defaults failed: ${e.message}`, 'error');
+    }
   }
 
   // ---- 字段更新 → API ----
@@ -148,6 +186,17 @@
     window.Terminal.log(`preset "${name}" loaded`, 'rx');
   }
 
+  async function handleDelPreset() {
+    const sel = document.getElementById('sel-preset');
+    const name = sel.value;
+    if (!name || !confirm('Delete preset "' + name + '"?')) return;
+    const presets = loadPresets();
+    delete presets[name];
+    savePresets(presets);
+    populatePresetSelect();
+    window.Terminal.log(`preset "${name}" deleted`, 'rx');
+  }
+
   // ---- 初始化入口 ----
   function init() {
     initBtnGroups();
@@ -156,6 +205,7 @@
 
     document.getElementById('btn-preset-save')?.addEventListener('click', handleSavePreset);
     document.getElementById('btn-preset-load')?.addEventListener('click', handleLoadPreset);
+    document.getElementById('btn-preset-del')?.addEventListener('click', handleDelPreset);
 
     // 初始加载
     refreshPanel();

@@ -122,7 +122,7 @@ main.cpp: 配置宏 (TX_ENCODING, TX_ADDR, TX_MSG ...)
 ## 已知问题
 
 1. **忙等待阻塞**: `Transmitter` 的位流发送使用 `while (esp_timer_get_time() < next)` 忙等待, 约 1–2s 阻塞, 可能触发 WDT。代码中每 500 位 `esp_task_wdt_reset()` 一次。
-2. **POCSAG 中文默认模式**: `deCodeAlpha()` 硬编码寻呼机默认中文模式 (`inGB = true`, func=3), 纯 ASCII 消息会额外插入 `\x0F` 控制字符, 但对显示无影响。
+2. **POCSAG 中文默认模式**: `deCodeAlpha()` 硬编码默认中文模式 (`inGB = true`), 纯 ASCII 消息会额外插入 `\x0F` 控制字符, 但对显示无影响。
 3. **单帧 FLEX**: 当前只发送单帧消息 (frame 0), 不涉及跨帧拼接。
 
 ## 项目配置

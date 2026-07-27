@@ -177,7 +177,7 @@ code |= evenCheck(code);                 // parity
 - 每个字符经 `flip7bitOrder()` 位反转后打包进 20-bit 消息缓冲区
 - 每 20 位生成一个消息码字
 
-**中文寻呼机模式 (func=3, TONE_D)**:
+**中文寻呼机模式 (GB2312)**:
 
 ```
 状态机:
@@ -336,10 +336,9 @@ byte-by-byte:
    余下 15-bit → 补零 flush → genMsgCode()
 
    消息码字: [msgWord0, msgWord1]
-   返回 func=3
 
 3. genSignal():
-   地址码字: genAddrCode(1225429, 3)
+   地址码字: genAddrCode(addr, function) — function 由 Tone 设置指定
 
    frameNum = 1225429 & 0x07 = 5
    addrSlot = 5 × 2 = 10
