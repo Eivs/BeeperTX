@@ -20,7 +20,7 @@ pio run --target upload --target monitor   # 烧录并打开串口
 四层设计：
 
 ```
-src/main.cpp                 → 配置层: 引脚、频率、功率、发射参数、HW 初始化、循环调度
+src/main.cpp                 → 组装层: HW 初始化、组件 (API/WiFi/Web/串口) 编排、循环调度
 src/Controller/              → 控制层: API 调度 + Transmitter + WebServer + SerialConsole
 src/WiFiManager/             → WiFi 管理: AP 配网 / STA 连接 / NVS 持久化
 lib/Pocsag/                  → 编码层: POCSAG 协议 (BCH, 码字组装, GB2312 中文)
@@ -32,15 +32,16 @@ lib/Charset/                 → 字符集: UTF-8 → GB2312 转换
 ### 关键数据流
 
 ```
-main.cpp: 配置宏 (TX_ENCODING, TX_ADDR, TX_MSG ...)
-  → Transmitter::send(Config)
-    → [POCSAG] PocsagEncoder::encode() + GB.get() GB2312
-    → [FLEX]   FlexEncoder::encode() + GB.get() GB2312 + \x0E/\x0F 控制字符
-  → Transmitter::enterTx()  Si446x_startDirectTX()
-  → [POCSAG] sendPreambleBits() + sendCodewords()  GPIO0 bit-banging
-  → [FLEX]   sendBytes()                             GPIO0 bit-banging
-  → Transmitter::exitTx()   Si446x_stopTX()
-  → Si4463 直接 FSK 调制发射 (Direct TX Mode)
+api_init() 默认配置 / Web/串口 API 动态设置
+  → api_dispatch() 命令调度
+    → Transmitter::send(Config)
+      → [POCSAG] PocsagEncoder::encode() + GB.get() GB2312
+      → [FLEX]   FlexEncoder::encode() + GB.get() GB2312 + \x0E/\x0F 控制字符
+    → Transmitter::enterTx()  Si446x_startDirectTX()
+    → [POCSAG] sendPreambleBits() + sendCodewords()  GPIO0 bit-banging
+    → [FLEX]   sendBytes()                             GPIO0 bit-banging
+    → Transmitter::exitTx()   Si446x_stopTX()
+    → Si4463 直接 FSK 调制发射 (Direct TX Mode)
 ```
 
 ### 发射模式
@@ -84,7 +85,7 @@ main.cpp: 配置宏 (TX_ENCODING, TX_ADDR, TX_MSG ...)
 - `Transmitter::bitTimeUs(baudRate)` — 码率→位时间查表 (512/1200/1600/2400/3200/6400)
 - FLEX 中文路径在 `sendFlex()` 中完成 GB2312 转换 + 控制字符注入
 - POCSAG 中文路径在 `deCodeAlpha()` 中完成控制字符注入
-- `main.cpp` 只定义宏和调用 `s_tx.send(makeConfig())`, 无编码逻辑
+- `main.cpp` 只负责硬件初始化和组件编排, 无发射逻辑；发射配置在 `API.cpp` 的 `api_init()` 中设置
 
 ### Si4463 驱动 (lib/si4463/)
 
@@ -117,7 +118,7 @@ main.cpp: 配置宏 (TX_ENCODING, TX_ADDR, TX_MSG ...)
 ### 频率配置
 
 支持 119–1050 MHz (6 个频段, 自动选择 OUTDIV/CLKGEN_BAND)。
-`main.cpp` 顶部 `#define TX_FREQ_KHZ` 为可调参数 (当前 156150 kHz)。
+默认频率在 `API.cpp` 的 `api_init()` 中设置 (当前 152675 kHz)，运行时通过 Web 面板或串口命令动态修改。
 
 ## 已知问题
 
@@ -132,47 +133,3 @@ main.cpp: 配置宏 (TX_ENCODING, TX_ADDR, TX_MSG ...)
 - `radio_config.h` — WDS 3.2.11.0 生成的射频配置文件 (1200 bps, ±4.5 kHz FSK)
 - `radio_config/` — 子目录包含 Rev B1 / C2 的多种配置 (FLEX/POCSAG, 不同速率)
 
-<!-- gitnexus:start -->
-# GitNexus — Code Intelligence
-
-This project is indexed by GitNexus as **BeeperTX** (1677 symbols, 2952 relationships, 148 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
-
-> Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
-
-## Always Do
-
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "main"})`.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `query({search_query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
-- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
-
-## Never Do
-
-- NEVER edit a function, class, or method without first running `impact` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
-- NEVER commit changes without running `detect_changes()` to check affected scope.
-
-## Resources
-
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/BeeperTX/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/BeeperTX/clusters` | All functional areas |
-| `gitnexus://repo/BeeperTX/processes` | All execution flows |
-| `gitnexus://repo/BeeperTX/process/{name}` | Step-by-step execution trace |
-
-## CLI
-
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-
-<!-- gitnexus:end -->

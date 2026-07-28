@@ -29,7 +29,7 @@
 ### 频率范围
 
 119–1050 MHz (6 个频段，自动选择 OUTDIV / CLKGEN_BAND)。
-通过 Web 面板或 API 命令动态配置（默认 153950 kHz）。
+通过 Web 面板或 API 命令动态配置（默认 152675 kHz）。
 
 ## 项目架构
 
@@ -99,11 +99,10 @@ AP 模式下内置 Captive Portal DNS，手机连接后自动弹出配网页面�
 浏览器访问 `http://BeeperTX.local/`（STA 模式）或 `http://192.168.4.1/`（AP 模式），
 提供完整的设备控制功能：
 
-- **配置面板**: 协议选择 (POCSAG/FLEX)、相位、铃音、消息类型、频率、码率、功率、地址、重复次数/间隔
+- **配置面板**: 协议选择 (POCSAG/FLEX)、相位、铃音、消息类型、频率、码率、功率、地址
 - **消息发送**: 输入 UTF-8 消息文本，一键发射
-- **循环发射**: Loop Start / Loop Stop 控制
 - **WiFi 配网**: 扫描附近网络、输入密码、连接并重启
-- **实时状态**: 连接状态指示灯、IP 地址、累计发射次数、循环状态
+- **实时状态**: 连接状态指示灯、IP 地址、累计发射次数
 - **预设管理**: 保存/加载发射配置预设 (LocalStorage)
 
 ### REST API 端点
@@ -115,12 +114,11 @@ AP 模式下内置 Captive Portal DNS，手机连接后自动弹出配网页面�
 | GET | `/api/config` | 当前发射配置 |
 | POST | `/api/config` | 设置发射配置 (JSON body) |
 | POST | `/api/transmit` | 发射消息 |
-| POST | `/api/loop` | 启动/停止循环发射 |
-| POST | `/api/abort` | 中止当前发射 |
 | POST | `/api/reset` | 重启设备 |
 | GET | `/api/wifi/status` | WiFi 状态 (含扫描结果) |
 | GET | `/api/wifi/status?quick=1` | WiFi 状态 (不触发扫描) |
-| POST | `/api/wifi/set` | 设置 WiFi 凭据 |
+| GET | `/api/wifi/scan` | 扫描附近 WiFi 网络 |
+| POST | `/api/wifi` | 设置 WiFi 凭据 (JSON: `{"ssid":"...","password":"..."}`) |
 | GET | `/api/log` | 最近发射日志 |
 
 ## 串口控制台
@@ -134,9 +132,7 @@ AP 模式下内置 Captive Portal DNS，手机连接后自动弹出配网页面�
 | `CONFIG` | 当前配置 | `CONFIG` |
 | `SET` | 修改配置 | `SET freq=152675 power=100` |
 | `TX` | 发射消息 | `TX msg=测试消息` |
-| `LOOP` | 循环发射 | `LOOP start` / `LOOP stop` |
-| `ABORT` | 中止发射 | `ABORT` |
-| `WIFI` | WiFi 配网 | `WIFI ssid=MyWiFi pass=12345678` |
+| `WIFI` | WiFi 状态/配网 | `WIFI` / `WIFI ssid=MyWiFi pass=12345678` |
 | `SCAN` | 扫描 WiFi | `SCAN` |
 | `RESET` | 重启设备 | `RESET` |
 | `PING` | 心跳检测 | `PING` |
@@ -165,9 +161,6 @@ AP 模式下内置 Captive Portal DNS，手机连接后自动弹出配网页面�
 | 配置 | `CMD_SET_CONFIG` | 0x10 | 设置发射配置 |
 | 配置 | `CMD_SAVE_CONFIG` | 0x11 | 保存配置到 NVS |
 | 发射 | `CMD_TRANSMIT` | 0x20 | 发射消息 |
-| 发射 | `CMD_ABORT` | 0x21 | 中止发射 |
-| 发射 | `CMD_LOOP_START` | 0x22 | 启动循环发射 |
-| 发射 | `CMD_LOOP_STOP` | 0x23 | 停止循环发射 |
 | 查询 | `CMD_GET_LOG` | 0x30 | 读取发射日志 |
 | WiFi | `CMD_SET_WIFI` | 0x40 | 设置 WiFi 凭据 |
 | WiFi | `CMD_SCAN_WIFI` | 0x41 | 扫描 WiFi 网络 |
@@ -180,16 +173,14 @@ AP 模式下内置 Captive Portal DNS，手机连接后自动弹出配网页面�
 | 参数 | 范围 | 默认值 | 说明 |
 |------|------|--------|------|
 | encoding | POCSAG / FLEX | POCSAG | 编码协议 |
-| freqKHz | 119000–1050000 | 153950 | 发射频率 (kHz) |
+| freqKHz | 119000–1050000 | 152675 | 发射频率 (kHz) |
 | txPower | 0–127 | 127 | PA 功率 (127=+20dBm) |
 | phase | NORMAL / INVERTED | NORMAL | FSK 相位极性 |
-| tone | A / B / C / D | A | POCSAG 铃音/功能码 |
+| tone | A / B / C / D | D | POCSAG 铃音/功能码 |
 | baudRate | 512/1200/1600/2400/3200/6400 | 1200 | 码率 (bps) |
 | msgType | NUMERIC / ALPHANUMERIC | ALPHANUMERIC | 消息类型 |
 | address | 0–2097151 (POCSAG) | 1000 | 寻呼地址 / CAPCODE |
-| message | UTF-8, 最大 255 字节 | — | 消息内容 |
-| repeat | 1–255 | 2 | 重复发射次数 |
-| intervalMs | 500–60000 | 2000 | 循环发射间隔 (ms) |
+| message | UTF-8, 最大 255 字节 | "BeeperTX OK" | 消息内容 |
 
 ## POCSAG 编码详解
 
@@ -509,7 +500,7 @@ Chip Revision: 0
   ROM ID: 6 (3=B1B, 6=C2A)
   Rev:    ext=2 branch=0
   State:  READY (3)
-  Freq:   153.950 MHz
+  Freq:   152.675 MHz
   PA PWR: 127
   RSSI:   -120 dBm
 
@@ -533,5 +524,6 @@ BeeperTX started
 5. **FLEX 不支持 GB2312 非中文字符**: GB2312 编码中，中文区域为 0xA1-0xF7(首字节)
    和 0xA1-0xFE(次字节)。非汉字区 (如日文假名、俄文字母) 未测试。
 6. **单帧 FLEX**: 当前只发送单帧消息 (frame 0)，不涉及跨帧拼接。
-7. **发射阻塞**: `CMD_TRANSMIT` 执行期间忙等待直到发射完成，期间不接受其他命令。
-   循环发射通过 `api_loop()` 在每帧调度间隙处理，不影响 Web/串口响应。
+7. **异步发射**: `CMD_TRANSMIT` 采用延迟执行模式——发射请求由 `api_dispatch()` 设置标志位，
+   实际的 `Transmitter::send()` 在 `setup()` 之后的 `loop()` 中由 `api_loop()` 调度执行，
+   避免阻塞 AsyncWebServer 的事件循环。
