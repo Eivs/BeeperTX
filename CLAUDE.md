@@ -80,7 +80,7 @@ api_init() 默认配置 / Web/串口 API 动态设置
 ### Transmitter 控制层 (src/Controller/)
 
 - `Transmitter` 类封装 Direct TX 公共流程, 统一调度 POCSAG / FLEX
-- `Transmitter::Config` 结构体包含全部发射参数: encoding, phase, baudRate, tone, address, message, msgType, repeat
+- `Transmitter::Config` 结构体包含全部发射参数: encoding, phase, baudRate, tone, address, message, msgType
 - `Transmitter::send(Config)` — 统一入口, 自动选择编码器
 - `Transmitter::bitTimeUs(baudRate)` — 码率→位时间查表 (512/1200/1600/2400/3200/6400)
 - FLEX 中文路径在 `sendFlex()` 中完成 GB2312 转换 + 控制字符注入
@@ -124,7 +124,11 @@ api_init() 默认配置 / Web/串口 API 动态设置
 
 1. **忙等待阻塞**: `Transmitter` 的位流发送使用 `while (esp_timer_get_time() < next)` 忙等待, 约 1–2s 阻塞, 可能触发 WDT。代码中每 500 位 `esp_task_wdt_reset()` 一次。
 2. **POCSAG 中文默认模式**: `deCodeAlpha()` 硬编码默认中文模式 (`inGB = true`), 纯 ASCII 消息会额外插入 `\x0F` 控制字符, 但对显示无影响。
-3. **单帧 FLEX**: 当前只发送单帧消息 (frame 0), 不涉及跨帧拼接。
+3. **FLEX 中文长度限制**: 受 FLEX 单帧最大 248 字符限制，中英混排消息中每个 GB2312 字计 2 字符，控制字符额外开销约 1–2 字节。
+4. **POCSAG 数字消息限制**: 数字消息需寻呼机本身支持 func=0 数字模式；字母消息使用 func=3 中文模式，两种模式不可混用。
+5. **FLEX 不支持 GB2312 非中文字符**: GB2312 编码中范围有限，非汉字区（如日文假名、俄文字母）未测试。
+6. **单帧 FLEX**: 当前只发送单帧消息 (frame 0)，不涉及跨帧拼接。
+7. **异步发射**: `CMD_TRANSMIT` 采用延迟执行模式——发射请求由 `api_dispatch()` 设置标志位，实际的 `Transmitter::send()` 在 `loop()` 中由 `api_loop()` 调度执行，避免阻塞 AsyncWebServer 事件循环。
 
 ## 项目配置
 

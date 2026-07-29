@@ -115,27 +115,229 @@ AP 模式下内置 Captive Portal DNS，手机连接后自动弹出配网页面�
 | POST | `/api/config` | 设置发射配置 (JSON body) |
 | POST | `/api/transmit` | 发射消息 |
 | POST | `/api/reset` | 重启设备 |
-| GET | `/api/wifi/status` | WiFi 状态 (含扫描结果) |
-| GET | `/api/wifi/status?quick=1` | WiFi 状态 (不触发扫描) |
+| GET | `/api/wifi/status` | WiFi 状态 (不触发扫描) |
 | GET | `/api/wifi/scan` | 扫描附近 WiFi 网络 |
 | POST | `/api/wifi` | 设置 WiFi 凭据 (JSON: `{"ssid":"...","password":"..."}`) |
 | GET | `/api/log` | 最近发射日志 |
 
 ## 串口控制台
 
-串口波特率 **115200 bps**，支持以下命令（`<CMD> [key=value ...]\r\n` 格式）：
+串口波特率 **115200 bps**，使用任何串口终端（`pio device monitor`、`screen`、`minicom` 等）连接即可交互。
+
+### 命令格式
+
+所有命令遵循 `<CMD> [key=value ...]\r\n` 格式，不区分大小写，响应以 `OK` 或 `ERR` 开头。
 
 | 命令 | 说明 | 示例 |
 |------|------|------|
 | `HELP` | 打印帮助 | `HELP` |
-| `STATUS` | 设备状态 | `STATUS` |
-| `CONFIG` | 当前配置 | `CONFIG` |
-| `SET` | 修改配置 | `SET freq=152675 power=100` |
-| `TX` | 发射消息 | `TX msg=测试消息` |
-| `WIFI` | WiFi 状态/配网 | `WIFI` / `WIFI ssid=MyWiFi pass=12345678` |
-| `SCAN` | 扫描 WiFi | `SCAN` |
+| `STATUS` | 设备状态（芯片/频率/功率/RSSI/运行时间） | `STATUS` |
+| `CONFIG` | 当前发射配置 | `CONFIG` |
+| `SET` | 修改发射配置 | `SET freq=152675 power=100` |
+| `TX` | 发射消息（可选覆盖消息内容） | `TX` / `TX msg=测试消息` |
+| `WIFI` | WiFi 状态 | `WIFI` |
+| `WIFI` | 设置 WiFi 凭据并重启 | `WIFI ssid=MyWiFi pass=12345678` |
+| `SCAN` | 扫描附近 WiFi 网络 | `SCAN` |
 | `RESET` | 重启设备 | `RESET` |
 | `PING` | 心跳检测 | `PING` |
+
+### 启动输出
+
+```
+==========================================
+   BeeperTX — Si4463 POCSAG/FLEX TX
+==========================================
+
+=== BeeperTX Serial Commands ===
+
+  HELP                  Show this help
+  STATUS                Device status (chip, freq, power, IP)
+  CONFIG                Current TX config
+  SET key=value ...     Set TX parameters
+     freq=<kHz>         Frequency (119000-1050000)
+     pwr=<0-127>        TX power
+     baud=<rate>        Baud rate (512/1200/1600/2400/3200/6400)
+     addr=<n>           Pager address/capcode
+     encoding=pocsag|flex
+     phase=norm|inv     Phase (normal/inverted)
+     tone=a|b|c|d       POCSAG tone
+     msgType=num|alpha  Numeric / Alphanumeric
+     msg=<text>         Message content (UTF-8)
+  TX [msg=<text>]       Transmit once (optional msg override)
+  WIFI                  Show WiFi status
+  WIFI ssid=X pass=Y    Set WiFi credentials (triggers reboot)
+  SCAN                  Scan nearby WiFi networks
+  RESET                 Reboot device
+  PING                  Heartbeat
+```
+
+### 命令详解与交互示例
+
+#### `PING` — 心跳检测
+
+检查设备是否在线，返回系统运行毫秒数，可用于延迟估算。
+
+```
+> PING
+OK PING uptime=54912
+```
+
+#### `STATUS` — 设备状态
+
+读取 Si4463 芯片信息、当前频率、功率、RSSI、累计发射次数和运行时间。
+
+```
+> STATUS
+OK STATUS part=0x4463 rom=6 rev=0 state=3 freq=152675kHz pwr=127 rssi=-120dBm uptime=123s tx=5
+```
+
+字段说明：
+
+| 字段 | 含义 |
+|------|------|
+| `part` | Si4463 型号 (0x4463) |
+| `rom` | ROM 版本 (3=B1, 6=C2) |
+| `rev` | 芯片修订版本 |
+| `state` | 射频状态机 (3=READY, 5=TX, 7=RX) |
+| `freq` | 当前锁定频率 (kHz) |
+| `pwr` | PA 功率 (0–127) |
+| `rssi` | 当前 RSSI (dBm) |
+| `uptime` | 系统运行时间 (秒) |
+| `tx` | 累计发射次数 |
+
+#### `CONFIG` — 查看发射配置
+
+显示当前完整的发射参数。
+
+```
+> CONFIG
+OK CONFIG encoding=pocsag phase=norm tone=D msgType=alpha freq=152675kHz pwr=127 baud=1200 addr=1000 msg="BeeperTX OK"
+```
+
+#### `SET` — 修改发射配置
+
+支持一个或多个 `key=value` 参数，空格分隔。未指定的参数保持当前值不变。
+
+支持的参数：
+
+| 参数 | 值范围 | 示例 |
+|------|--------|------|
+| `freq` | 119000–1050000 (kHz) | `freq=153950` |
+| `pwr` | 0–127 | `pwr=100` |
+| `baud` | 512 / 1200 / 1600 / 2400 / 3200 / 6400 | `baud=2400` |
+| `addr` | POCSAG: 0–2097151, FLEX: CAPCODE | `addr=12345` |
+| `encoding` | `pocsag` / `flex` | `encoding=flex` |
+| `phase` | `norm` / `inv` | `phase=inv` |
+| `tone` | `a` / `b` / `c` / `d` | `tone=c` |
+| `msgType` | `num` / `alpha` | `msgType=num` |
+| `msg` | UTF-8 文本（可含空格） | `msg=测试消息` |
+
+**注意**: `SET` 会立即将频率和功率应用到 Si4463 硬件，其他参数缓存到内存。修改后的配置不会自动持久化。
+
+```
+> SET freq=153950 baud=2400 msg=Hello
+OK SET
+> CONFIG
+OK CONFIG encoding=pocsag phase=norm tone=D msgType=alpha freq=153950kHz pwr=127 baud=2400 addr=1000 msg="Hello"
+```
+
+```
+> SET encoding=flex msgType=num addr=2100001
+OK SET
+```
+
+参数无效时返回错误码：
+
+```
+> SET freq=999999
+ERR SET code=2 detail=-1
+```
+
+#### `TX` — 发射消息
+
+无参数时使用当前配置的消息内容发射。可指定 `msg=` 临时覆盖消息（不影响已保存的配置）。
+
+```
+> TX
+OK TX count=0
+```
+
+串口会输出发射日志（实际由 `api_loop()` 在后台调度）：
+
+```
+[LOG] TX> POCSAG NRM ALPHA addr=1000 freq=152675kHz baud=1200 pw=127 tone=D "BeeperTX OK"
+TX[0][POCSAG] addr=1000 tone=D baud=1200 ALPHA NRM "BeeperTX OK"
+. OK
+```
+
+```
+> TX msg=中文测试
+OK TX count=0
+[LOG] TX> POCSAG NRM ALPHA addr=1000 freq=152675kHz baud=1200 pw=127 tone=D "中文测试"
+...
+```
+
+#### `WIFI` — WiFi 状态/配网
+
+**查询状态**（无参数）：
+
+```
+> WIFI
+OK WIFI state=CONNECTED
+```
+
+状态值：`DISCONNECTED` (0)、`CONNECTING` (1)、`CONNECTED` (2)、`AP` (3)
+
+**设置凭据**：
+
+```
+> WIFI ssid=MyWiFi pass=12345678
+OK WIFI saved, connecting...
+Device will reboot in STA mode if connection succeeds.
+```
+
+凭据保存到 NVS 后自动尝试连接，连接成功后设备会重启进入 STA 模式。
+
+#### `SCAN` — 扫描 WiFi
+
+触发后台 WiFi 扫描并立即返回缓存的扫描结果。结果以 JSON 数组格式显示。
+
+```
+> SCAN
+OK SCAN [{"ssid":"MyWiFi","rssi":-45,"secure":true},{"ssid":"Neighbor","rssi":-78,"secure":true}]
+```
+
+#### `RESET` — 重启设备
+
+```
+> RESET
+OK RESET rebooting...
+```
+
+#### `HELP` — 帮助
+
+```
+> HELP
+```
+（输出前文完整的帮助文本）
+
+### 错误响应格式
+
+所有命令在失败时返回统一格式：
+
+```
+ERR <CMD> code=<N> detail=<M>
+```
+
+| code | 含义 |
+|------|------|
+| 0 | OK |
+| 1 | 未知命令 |
+| 2 | 参数非法（越界 / 不支持的码率等） |
+| 3 | 设备忙（正在发射中） |
+| 4 | 硬件异常（Si4463 无响应等） |
+| 5 | 内存不足 |
+| 6 | 发射被用户中止 |
 
 ## 命令系统 (API)
 
@@ -159,8 +361,8 @@ AP 模式下内置 Captive Portal DNS，手机连接后自动弹出配网页面�
 | 系统 | `CMD_GET_CONFIG` | 0x02 | 读取发射配置 |
 | 系统 | `CMD_RESET` | 0x03 | 重启设备 |
 | 配置 | `CMD_SET_CONFIG` | 0x10 | 设置发射配置 |
-| 配置 | `CMD_SAVE_CONFIG` | 0x11 | 保存配置到 NVS |
 | 发射 | `CMD_TRANSMIT` | 0x20 | 发射消息 |
+| 发射 | `CMD_ABORT` | 0x21 | 中止发射 |
 | 查询 | `CMD_GET_LOG` | 0x30 | 读取发射日志 |
 | WiFi | `CMD_SET_WIFI` | 0x40 | 设置 WiFi 凭据 |
 | WiFi | `CMD_SCAN_WIFI` | 0x41 | 扫描 WiFi 网络 |
