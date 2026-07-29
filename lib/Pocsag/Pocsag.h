@@ -47,6 +47,18 @@ public:
               size_t length, DisplayMode mode = MODE_ALPHANUMERIC,
               bool invert = false);
 
+  /**
+   * @brief 批量编码 — 多个地址共用一个前导码, 逐批拼接。
+   * @param addresses  地址数组
+   * @param addrCount  地址数量
+   * @param function   2-bit 功能码 (0-3)
+   * @param mode       消息编码方式 (NUMERIC=4-bit BCD, ALPHANUMERIC=7-bit ASCII)
+   * @param invert     反相发射
+   * @return 基带总码字数
+   */
+  int encodeBatch(const uint32_t *addresses, int addrCount,
+                  int function, DisplayMode mode, bool invert);
+
   /** @return 基带码字缓冲区指针 */
   const unsigned long *getBaseband() const { return m_baseband; }
 

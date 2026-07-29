@@ -65,7 +65,19 @@
     wifiSet(ssid, password) { return _fetch('POST', '/api/wifi', { ssid, password }); },
 
     /** GET /api/log */
-    getLog()      { return _fetch('GET', '/api/log'); }
+    getLog()      { return _fetch('GET', '/api/log'); },
+
+    /**
+     * POST /api/sweep/start
+     * @param {string} mode — 'addr' 或 'freq'
+     */
+    sweepStart(mode) { return _fetch('POST', '/api/sweep/start', { mode }); },
+
+    /** POST /api/sweep/stop */
+    sweepStop()      { return _fetch('POST', '/api/sweep/stop'); },
+
+    /** GET /api/sweep/status */
+    sweepStatus()    { return _fetch('GET', '/api/sweep/status'); }
   };
 
 })();

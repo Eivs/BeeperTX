@@ -94,6 +94,20 @@ void WebServer::setupRoutes() {
     onGetLog(req);
   });
 
+  // ---- 扫描 ----
+  m_server.on("/api/sweep/start", HTTP_POST,
+    [](AsyncWebServerRequest*) {},
+    nullptr,
+    [this](AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t, size_t) {
+      onSweepStart(req, data, len);
+    });
+  m_server.on("/api/sweep/stop", HTTP_POST, [this](AsyncWebServerRequest* req) {
+    onSweepStop(req);
+  });
+  m_server.on("/api/sweep/status", HTTP_GET, [this](AsyncWebServerRequest* req) {
+    onSweepStatus(req);
+  });
+
   // ---- CORS (开发调试用) ----
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -431,4 +445,83 @@ void WebServer::onGetLog(AsyncWebServerRequest* req) {
   char buf[2048];
   api_getLog(buf, sizeof(buf));
   req->send(200, "text/plain", buf);
+}
+
+// ============================================================
+// 扫描 API 处理器
+// ============================================================
+
+void WebServer::onSweepStart(AsyncWebServerRequest* req, uint8_t* data, size_t len) {
+  uint8_t mode = 0xFF;
+
+  // 解析 JSON body: {"mode":"addr"} 或 {"mode":"freq"}
+  if (data && len > 0) {
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, (char*)data, len);
+    if (!err && doc["mode"].is<const char*>()) {
+      const char* m = doc["mode"];
+      if (strcmp(m, "addr") == 0)      mode = 0;
+      else if (strcmp(m, "freq") == 0) mode = 1;
+    }
+  }
+
+  if (mode > 1) {
+    req->send(400, "application/json",
+              "{\"code\":2,\"detail\":\"mode must be 'addr' or 'freq'\"}");
+    return;
+  }
+
+  CmdRequest r; CmdResponse resp;
+  memset(&r, 0, sizeof(r));
+  r.cmd = CmdID::CMD_SWEEP_START;
+  r.sweepStart.mode = mode;
+  api_dispatch(&r, &resp);
+
+  if (resp.code == RespCode::OK) {
+    TxConfig cfg = api_getConfig();
+    const char* modeName = (mode == 0) ? "addr" : "freq";
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "{\"code\":0,\"mode\":\"%s\",\"start\":%lu}",
+             modeName,
+             (unsigned long)((mode == 0) ? cfg.address : cfg.freqKHz));
+    req->send(200, "application/json", buf);
+  } else {
+    char buf[128];
+    snprintf(buf, sizeof(buf), "{\"code\":%d,\"detail\":%d}",
+             (int)resp.code, resp.detail);
+    req->send(400, "application/json", buf);
+  }
+}
+
+void WebServer::onSweepStop(AsyncWebServerRequest* req) {
+  CmdRequest r; CmdResponse resp;
+  memset(&r, 0, sizeof(r));
+  r.cmd = CmdID::CMD_SWEEP_STOP;
+  api_dispatch(&r, &resp);
+
+  req->send(200, "application/json",
+            "{\"code\":0,\"detail\":\"stopped\"}");
+}
+
+void WebServer::onSweepStatus(AsyncWebServerRequest* req) {
+  CmdRequest r; CmdResponse resp;
+  memset(&r, 0, sizeof(r));
+  r.cmd = CmdID::CMD_SWEEP_STATUS;
+  api_dispatch(&r, &resp);
+
+  if (resp.code == RespCode::OK) {
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "{\"code\":0,\"running\":%s,\"mode\":%d,"
+             "\"current\":%lu,\"totalSent\":%lu}",
+             resp.sweepStatus.running ? "true" : "false",
+             resp.sweepStatus.mode,
+             (unsigned long)resp.sweepStatus.current,
+             (unsigned long)resp.sweepStatus.totalSent);
+    req->send(200, "application/json", buf);
+  } else {
+    req->send(500, "application/json",
+              "{\"code\":1,\"detail\":\"status failed\"}");
+  }
 }

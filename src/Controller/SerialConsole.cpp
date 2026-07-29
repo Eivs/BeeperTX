@@ -75,6 +75,8 @@ void SerialConsole::processLine(const char* line) {
   else if (strcasecmp(cmd, "TX") == 0)     cmdTx(args);
   else if (strcasecmp(cmd, "WIFI") == 0)   cmdWifi(args);
   else if (strcasecmp(cmd, "SCAN") == 0)   cmdScan();
+  else if (strcasecmp(cmd, "SWEEP") == 0)  cmdSweep(args);
+  else if (strcasecmp(cmd, "STOP") == 0)   cmdStop();
   else if (strcasecmp(cmd, "RESET") == 0)  cmdReset();
   else if (strcasecmp(cmd, "PING") == 0)   cmdPing();
   else {
@@ -117,6 +119,8 @@ void SerialConsole::printHelp() {
     "     msgType=num|alpha  Numeric / Alphanumeric\n"
     "     msg=<text>         Message content (UTF-8)\n"
     "  TX [msg=<text>]       Transmit once (optional msg override)\n"
+    "  SWEEP addr|freq        Start address/frequency sweep\n"
+    "  STOP                   Stop sweep\n"
     "  WIFI                  Show WiFi status\n"
     "  WIFI ssid=X pass=Y    Set WiFi credentials (triggers reboot)\n"
     "  SCAN                  Scan nearby WiFi networks\n"
@@ -355,6 +359,62 @@ void SerialConsole::cmdScan() {
   if (resp.code == RespCode::OK) {
     m_stream.print(F("OK SCAN "));
     m_stream.println(resp.wifi.scanResult);
+  }
+}
+
+void SerialConsole::cmdSweep(const char* args) {
+  // 解析 mode: "addr" 或 "freq"
+  uint8_t mode = 0xFF;
+  if (args) {
+    while (*args == ' ') args++;
+    if (strcasecmp(args, "addr") == 0)       mode = 0;
+    else if (strcasecmp(args, "freq") == 0)  mode = 1;
+  }
+
+  if (mode > 1) {
+    m_stream.println(F("ERR SWEEP: need 'addr' or 'freq'. See HELP."));
+    return;
+  }
+
+  CmdRequest req; CmdResponse resp;
+  memset(&req, 0, sizeof(req));
+  req.cmd = CmdID::CMD_SWEEP_START;
+  req.sweepStart.mode = mode;
+  api_dispatch(&req, &resp);
+
+  if (resp.code == RespCode::OK) {
+    const char* modeName = (mode == 0) ? "addr" : "freq";
+    TxConfig cfg = api_getConfig();
+    m_stream.print(F("OK SWEEP mode="));
+    m_stream.print(modeName);
+    if (mode == 0) {
+      m_stream.print(F(" start="));
+      m_stream.print(cfg.address);
+    } else {
+      m_stream.print(F(" start="));
+      m_stream.print(cfg.freqKHz);
+      m_stream.print(F("kHz step=25kHz max=300000kHz"));
+    }
+    m_stream.println();
+  } else {
+    m_stream.print(F("ERR SWEEP code="));
+    m_stream.print((int)resp.code);
+    m_stream.print(F(" detail="));
+    m_stream.println(resp.detail);
+  }
+}
+
+void SerialConsole::cmdStop() {
+  CmdRequest req; CmdResponse resp;
+  memset(&req, 0, sizeof(req));
+  req.cmd = CmdID::CMD_SWEEP_STOP;
+  api_dispatch(&req, &resp);
+
+  if (resp.code == RespCode::OK) {
+    m_stream.println(F("OK STOP sweep stopped"));
+  } else {
+    m_stream.print(F("ERR STOP code="));
+    m_stream.println((int)resp.code);
   }
 }
 

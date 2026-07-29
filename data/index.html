@@ -104,6 +104,22 @@
           </div>
         </fieldset>
 
+        <!-- 追码/追频 扫描 -->
+        <fieldset class="cfg-group" id="group-sweep">
+          <legend>Sweep</legend>
+          <div class="btn-group" style="margin-bottom:4px;">
+            <button id="btn-sweep-addr" class="btn btn-sm" title="从当前地址开始逐地址扫描">追地址码</button>
+            <button id="btn-sweep-freq" class="btn btn-sm" title="从当前频率开始,+25kHz 步进至 300MHz">追频率</button>
+          </div>
+          <button id="btn-sweep-stop" class="btn btn-sm btn-error" style="width:100%;margin-bottom:4px;" disabled>STOP</button>
+          <div id="sweep-status-line" class="sweep-status" style="display:none;">
+            <span id="sweep-mode-text">--</span>
+            <span id="sweep-current-text">--</span>
+            <span class="sep">|</span>
+            <span>已发: <strong id="sweep-count-text">0</strong></span>
+          </div>
+        </fieldset>
+
         <!-- 预设管理 -->
         <fieldset class="cfg-group">
           <legend>Presets</legend>

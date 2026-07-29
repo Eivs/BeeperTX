@@ -259,3 +259,34 @@ void Transmitter::send(const Config& cfg) {
       break;
   }
 }
+
+// ============================================================
+// 原始发送 — Sweeper 等模块直接使用已编码数据
+// ============================================================
+void Transmitter::sendPocsagRaw(const unsigned long* baseband, int wordCount,
+                                 int baudRate) {
+  int bt = bitTimeUs(baudRate);
+  enterTx();
+  sendCodewords(baseband, wordCount, bt);
+  exitTx();
+}
+
+void Transmitter::sendFlexRaw(const uint8_t* data, size_t len,
+                               int baudRate, bool invert) {
+  int bt = bitTimeUs(baudRate);
+  enterTx();
+  if (invert) {
+    uint8_t* invBuf = (uint8_t*)malloc(len);
+    if (invBuf) {
+      for (size_t i = 0; i < len; i++) invBuf[i] = ~data[i];
+      sendBytes(invBuf, len, bt);
+      free(invBuf);
+    } else {
+      // malloc 失败, 直接发正相
+      sendBytes(data, len, bt);
+    }
+  } else {
+    sendBytes(data, len, bt);
+  }
+  exitTx();
+}

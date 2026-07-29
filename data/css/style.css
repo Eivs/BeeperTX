@@ -350,6 +350,25 @@ body.terminal {
   border-color: var(--primary);
 }
 
+/* ---- Sweep Controls ---- */
+#group-sweep {
+  border-color: var(--accent);
+}
+#group-sweep legend {
+  color: var(--accent);
+}
+
+.sweep-status {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  text-align: center;
+  padding: 3px 0;
+}
+.sweep-status .sep {
+  margin: 0 4px;
+}
+
 /* ---- Responsive ---- */
 @media (max-width: 768px) {
   .main-content {

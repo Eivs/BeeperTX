@@ -15,6 +15,7 @@
 #include "Transmitter.h"
 #include "WiFiManager.h"
 #include "Si446x.h"
+#include "Sweeper.h"
 #include <Arduino.h>
 #include <cstring>
 
@@ -26,6 +27,7 @@ static TxConfig       s_config;       // 当前发射配置
 static DeviceStatus   s_status;       // 设备状态缓存 (每次 GET_STATUS 刷新)
 static Transmitter*   s_tx  = nullptr;// Transmitter 实例
 static WiFiManager*   s_wifi = nullptr;// WiFiManager 实例
+static Sweeper*       s_sweeper = nullptr;// Sweeper 实例
 static uint32_t       s_txCount = 0;
 static bool           s_pendingTx = false;      // 待发射标记 (在主循环执行)
 static char           s_pendingTxMsg[256];      // 待发射消息
@@ -118,6 +120,13 @@ static void handleGetConfig(const CmdRequest* req, CmdResponse* resp) {
 // ============================================================
 
 static void handleSetConfig(const CmdRequest* req, CmdResponse* resp) {
+  // 扫描期间禁止修改配置
+  if (s_sweeper && s_sweeper->isRunning()) {
+    resp->cmd = CmdID::CMD_SET_CONFIG; resp->code = RespCode::ERR_BUSY;
+    resp->detail = -10;
+    return;
+  }
+
   const TxConfig& c = req->setConfig;
 
   if (!isFreqValid(c.freqKHz)) {
@@ -175,6 +184,13 @@ static Transmitter::Config makeTxConfig() {
 }
 
 static void handleTransmit(const CmdRequest* req, CmdResponse* resp) {
+  // 扫描期间禁止单次发射
+  if (s_sweeper && s_sweeper->isRunning()) {
+    resp->cmd = CmdID::CMD_TRANSMIT; resp->code = RespCode::ERR_BUSY;
+    resp->detail = -10;
+    return;
+  }
+
   if (s_pendingTx) {
     resp->cmd = CmdID::CMD_TRANSMIT; resp->code = RespCode::ERR_BUSY;
     resp->detail = -1;
@@ -287,6 +303,104 @@ static void handleScanWiFi(const CmdRequest* req, CmdResponse* resp) {
 }
 
 // ============================================================
+// Handler: SWEEP_START
+// ============================================================
+
+static void handleSweepStart(const CmdRequest* req, CmdResponse* resp) {
+  resp->cmd = CmdID::CMD_SWEEP_START;
+
+  if (!s_sweeper) {
+    resp->code = RespCode::ERR_HW;
+    resp->detail = -1;
+    return;
+  }
+  if (s_sweeper->isRunning()) {
+    resp->code = RespCode::ERR_BUSY;
+    resp->detail = -2;
+    return;
+  }
+  if (s_pendingTx) {
+    resp->code = RespCode::ERR_BUSY;
+    resp->detail = -3;
+    return;
+  }
+
+  // mode 校验
+  uint8_t m = req->sweepStart.mode;
+  if (m > 1) {
+    resp->code = RespCode::ERR_PARAM;
+    resp->detail = -4;
+    return;
+  }
+
+  // 构建 Sweeper 配置 — 发射参数从当前 s_config 继承
+  Sweeper::Config cfg;
+  cfg.mode      = (m == 0) ? Sweeper::ADDR_SWEEP : Sweeper::FREQ_SWEEP;
+  cfg.addrStart = s_config.address;
+  cfg.freqStartKHz = s_config.freqKHz;
+  // 以下使用 Sweeper 默认常量, Config 结构体已设默认值
+  // cfg.freqStepKHz / cfg.freqMaxKHz 从 Config 默认继承
+  cfg.encoding  = (s_config.encoding == EncodingType::POCSAG)
+                      ? 0 : 1;  // Transmitter::POCSAG/FLEX
+  cfg.phase     = (s_config.phase == PhaseType::NORMAL) ? 0 : 1;
+  cfg.tone      = (int)s_config.tone;
+  cfg.msgType   = (s_config.msgType == MsgType::NUMERIC) ? 0 : 1;
+  cfg.baudRate  = s_config.baudRate;
+  cfg.txPower   = s_config.txPower;
+  cfg.freqKHz   = s_config.freqKHz;
+  cfg.address   = s_config.address;
+
+  int result = s_sweeper->start(cfg);
+  if (result == 0) {
+    resp->code = RespCode::OK;
+    const char* modeName = (cfg.mode == Sweeper::ADDR_SWEEP) ? "addr" : "freq";
+    char logLine[128];
+    snprintf(logLine, sizeof(logLine), "SWEEP START mode=%s start=%lu",
+             modeName, (unsigned long)((cfg.mode == Sweeper::ADDR_SWEEP)
+                 ? cfg.addrStart : cfg.freqStartKHz));
+    api_log(logLine);
+  } else {
+    resp->code   = RespCode::ERR_PARAM;
+    resp->detail = result;
+  }
+}
+
+// ============================================================
+// Handler: SWEEP_STOP
+// ============================================================
+
+static void handleSweepStop(const CmdRequest* req, CmdResponse* resp) {
+  resp->cmd = CmdID::CMD_SWEEP_STOP;
+
+  if (s_sweeper && s_sweeper->isRunning()) {
+    char logLine[64];
+    snprintf(logLine, sizeof(logLine), "SWEEP STOP sent=%lu",
+             (unsigned long)s_sweeper->totalSent());
+    api_log(logLine);
+    s_sweeper->stop();
+  }
+  resp->code = RespCode::OK;
+}
+
+// ============================================================
+// Handler: SWEEP_STATUS
+// ============================================================
+
+static void handleSweepStatus(const CmdRequest* req, CmdResponse* resp) {
+  resp->cmd  = CmdID::CMD_SWEEP_STATUS;
+  resp->code = RespCode::OK;
+
+  if (s_sweeper) {
+    resp->sweepStatus.running   = s_sweeper->isRunning();
+    resp->sweepStatus.mode      = (uint8_t)s_sweeper->mode();
+    resp->sweepStatus.current   = s_sweeper->current();
+    resp->sweepStatus.totalSent = s_sweeper->totalSent();
+  } else {
+    memset(&resp->sweepStatus, 0, sizeof(resp->sweepStatus));
+  }
+}
+
+// ============================================================
 // 日志操作
 // ============================================================
 
@@ -338,6 +452,10 @@ void api_setTransmitter(Transmitter* tx) {
 
 void api_setWiFiManager(WiFiManager* wifi) {
   s_wifi = wifi;
+}
+
+void api_setSweeper(Sweeper* sweeper) {
+  s_sweeper = sweeper;
 }
 
 TxConfig api_getConfig() {
@@ -407,6 +525,9 @@ void api_loop() {
       strncpy(s_config.message, savedMsg, sizeof(s_config.message) - 1);
     }
   }
+
+  // Sweeper 调度 (非阻塞)
+  if (s_sweeper) s_sweeper->loop();
 }
 
 // ============================================================
@@ -425,6 +546,9 @@ static const char* cmdName(CmdID cmd) {
   case CmdID::CMD_SET_WIFI:        return "SET_WIFI";
   case CmdID::CMD_SCAN_WIFI:       return "SCAN_WIFI";
   case CmdID::CMD_GET_WIFI_STATUS: return "GET_WIFI_STATUS";
+  case CmdID::CMD_SWEEP_START:   return "SWEEP_START";
+  case CmdID::CMD_SWEEP_STOP:    return "SWEEP_STOP";
+  case CmdID::CMD_SWEEP_STATUS:  return "SWEEP_STATUS";
   default: return "UNKNOWN";
   }
 }
@@ -447,6 +571,9 @@ void api_dispatch(const CmdRequest* req, CmdResponse* resp) {
   case CmdID::CMD_SET_WIFI:       handleSetWiFi(req, resp);       break;
   case CmdID::CMD_SCAN_WIFI:      handleScanWiFi(req, resp);      break;
   case CmdID::CMD_GET_WIFI_STATUS:handleGetWifiStatus(req, resp); break;
+  case CmdID::CMD_SWEEP_START:   handleSweepStart(req, resp);    break;
+  case CmdID::CMD_SWEEP_STOP:    handleSweepStop(req, resp);     break;
+  case CmdID::CMD_SWEEP_STATUS:  handleSweepStatus(req, resp);   break;
   default: break;
   }
 

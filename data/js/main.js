@@ -50,16 +50,52 @@
 
   // ---- 初始化 ----
   function init() {
-    // Console.loadLog();
-
     // 定时轮询状态
     pollStatus();
     setInterval(pollStatus, 3000);
+
+    // 扫描状态轮询 (每 1.5s)
+    setInterval(() => {
+      if (window.ConfigPanel && window.ConfigPanel.updateSweepUI) {
+        window.ConfigPanel.updateSweepUI();
+      }
+    }, 1500);
+
+    // 日志轮询 (每 2s)
+    setInterval(pollLog, 2000);
 
     // 定期刷新配置面板
     setInterval(() => {
       if (window.ConfigPanel) window.ConfigPanel.refresh();
     }, 10000);
+  }
+
+  // ---- 日志轮询 ----
+  async function pollLog() {
+    try {
+      const text = await window.API.getLog();
+      if (!text || text.code) return;
+      const lines = text.split('\n').filter(l => l.trim());
+      if (!window._lastLogLines) window._lastLogLines = [];
+
+      // 对比上次结果, 只追加新增的行 (处理 ring buffer 回绕)
+      const prevLen = window._lastLogLines.length;
+      if (lines.length < prevLen) {
+        // Ring buffer 回绕: 重置基准
+        window._lastLogLines = [];
+      }
+
+      for (let i = window._lastLogLines.length; i < lines.length; i++) {
+        const l = lines[i];
+        let cls = 'system';
+        if (l.includes('TX>'))      cls = 'tx';
+        else if (l.includes('ERR')) cls = 'error';
+        else if (l.includes('SWEEP')) cls = 'info';
+        else if (l.includes('OK'))  cls = 'rx';
+        window.Terminal.log(l, cls);
+      }
+      window._lastLogLines = lines;
+    } catch(e) { /* ignore */ }
   }
 
   if (document.readyState === 'loading') {

@@ -27,6 +27,7 @@
 #include "WiFiManager.h"
 #include "SerialConsole.h"
 #include "WebServer.h"
+#include "Sweeper.h"
 #include <Arduino.h>
 #include <SPI.h>
 
@@ -47,6 +48,7 @@
 // ============================================================
 Transmitter    s_tx(PIN_TX_DATA);
 WiFiManager    s_wifi;
+Sweeper        s_sweeper;
 SerialConsole  s_serial(Serial);
 WebServer*     s_web = nullptr;
 
@@ -136,6 +138,8 @@ void setup() {
   // ---- 2. API 初始化 ----
   api_init();
   api_setTransmitter(&s_tx);
+  s_sweeper.setTransmitter(&s_tx);
+  api_setSweeper(&s_sweeper);
 
   // ---- 3. WiFi 初始化 ----
   Serial.print(F("WiFi: "));

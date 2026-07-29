@@ -359,3 +359,78 @@ void PocsagEncoder::genSignal(unsigned long addr, int function,
 
   m_bandLength = bandPtr;
 }
+
+// ============================================================================
+// 批量编码 — 多地址共用一个前导码
+// ============================================================================
+
+int PocsagEncoder::encodeBatch(const uint32_t *addresses, int addrCount,
+                                int function, DisplayMode mode, bool invert) {
+  m_bandLength = 0;
+  memset(m_baseband, 0, sizeof(m_baseband));
+
+  if (!addresses || addrCount <= 0) return 0;
+
+  // ---- 1. 共享前导码 ----
+  genPreamble();
+  int bandPtr = 18;
+
+  // ---- 2. 逐地址生成批次 (SYNC + 16 帧) ----
+  for (int i = 0; i < addrCount && bandPtr < MAX_BASEBAND - 20; i++) {
+    // 2a. 编码消息 = 地址十进制字符串
+    char addrStr[16];
+    snprintf(addrStr, sizeof(addrStr), "%lu", (unsigned long)addresses[i]);
+    size_t msgLen = strlen(addrStr);
+
+    memset(m_msgCode, 0, sizeof(m_msgCode));
+    if (mode == MODE_NUMERIC) {
+      deCodeNumeric((const uint8_t *)addrStr, msgLen);
+    } else {
+      deCodeAlpha((const uint8_t *)addrStr, msgLen);
+    }
+
+    // 2b. 生成地址码字
+    unsigned long addrWord = genAddrCode(addresses[i], function);
+    uint8_t frameNum = addresses[i] & 0x07;
+    uint8_t addrSlot = frameNum * 2;
+
+    // 2c. 写入 SYNC + 16 帧
+    m_baseband[bandPtr++] = POCSAG_SYNC;
+
+    int msgIdx = 0;
+    bool addrSent = false;
+    for (int slot = 0; slot < 16 && bandPtr < MAX_BASEBAND; slot++) {
+      if (slot == addrSlot && !addrSent) {
+        m_baseband[bandPtr++] = addrWord;
+        addrSent = true;
+      } else if (addrSent && msgIdx < MAX_CODEMORDS &&
+                 m_msgCode[msgIdx] != POCSAG_IDLE && m_msgCode[msgIdx] != 0) {
+        m_baseband[bandPtr++] = m_msgCode[msgIdx++];
+      } else {
+        m_baseband[bandPtr++] = POCSAG_IDLE;
+      }
+    }
+  }
+
+  // ---- 3. 尾部填充 16 个空闲码字 ----
+  for (int i = 0; i < 16 && bandPtr < MAX_BASEBAND; i++) {
+    m_baseband[bandPtr++] = POCSAG_IDLE;
+  }
+
+  // ---- 4. 清除残留零码字 ----
+  for (int i = 0; i < bandPtr; i++) {
+    if (m_baseband[i] == 0) {
+      m_baseband[i] = POCSAG_IDLE;
+    }
+  }
+
+  // ---- 5. 反相处理 ----
+  if (invert) {
+    for (int i = 0; i < bandPtr; i++) {
+      m_baseband[i] = ~m_baseband[i];
+    }
+  }
+
+  m_bandLength = bandPtr;
+  return bandPtr;
+}

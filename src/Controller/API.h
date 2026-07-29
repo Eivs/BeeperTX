@@ -92,6 +92,11 @@ enum class CmdID : uint8_t {
 
   // ---- 查询 (0x30–0x3F) ----
   CMD_GET_LOG     = 0x30,   //!< 读取最近发射日志
+
+  // ---- 扫描 (0x50–0x5F) ----
+  CMD_SWEEP_START  = 0x50,  //!< 启动追码/追频
+  CMD_SWEEP_STOP   = 0x51,  //!< 停止扫描
+  CMD_SWEEP_STATUS = 0x52,  //!< 查询扫描状态
 };
 
 // ============================================================
@@ -163,8 +168,13 @@ struct CmdRequest {
     // CMD_GET_LOG:          读取最近 N 条日志
     uint8_t logCount;
 
+    // CMD_SWEEP_START:      启动追码/追频
+    struct {
+      uint8_t mode;   // 0=追地址码, 1=追频率
+    } sweepStart;
+
     // CMD_PING / CMD_GET_STATUS / CMD_GET_CONFIG /
-    // CMD_ABORT / CMD_SCAN_WIFI:
+    // CMD_ABORT / CMD_SCAN_WIFI / CMD_SWEEP_STOP / CMD_SWEEP_STATUS:
     //   无额外参数
   };
 
@@ -200,6 +210,14 @@ struct CmdResponse {
 
     // CMD_SCAN_WIFI / CMD_SET_WIFI
     WiFiStatus wifi;
+
+    // CMD_SWEEP_STATUS
+    struct {
+      bool     running;
+      uint8_t  mode;       // 0=idle, 1=追地址, 2=追频率
+      uint32_t current;    // 当前地址/频率
+      uint32_t totalSent;  // 累计发送次数
+    } sweepStatus;
   };
 
   CmdResponse() { memset(this, 0, sizeof(*this)); }
@@ -212,6 +230,7 @@ struct CmdResponse {
 // 前向声明
 class Transmitter;
 class WiFiManager;
+class Sweeper;
 
 #ifdef __cplusplus
 extern "C" {
@@ -236,6 +255,11 @@ void api_setTransmitter(Transmitter* tx);
  * @brief 注入 WiFiManager 指针 (由 main.cpp 在创建 wifi 后调用)。
  */
 void api_setWiFiManager(WiFiManager* wifi);
+
+/**
+ * @brief 注入 Sweeper 指针 (由 main.cpp 在创建 sweeper 后调用)。
+ */
+void api_setSweeper(Sweeper* sweeper);
 
 /**
  * @brief 获取当前发射配置的快照 (用于 Web/串口日志)。

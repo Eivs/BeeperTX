@@ -74,6 +74,18 @@ public:
    */
   void send(const Config& cfg);
 
+  /**
+   * @brief 直接发送已编码的 POCSAG 基带码字数组 (已含前导码)。
+   *        一次 enterTx→send→exitTx, 不做额外编码/反相。
+   */
+  void sendPocsagRaw(const unsigned long* baseband, int wordCount, int baudRate);
+
+  /**
+   * @brief 直接发送已编码的 FLEX 字节数组。
+   *        一次 enterTx→send→exitTx, 可选字节级反相。
+   */
+  void sendFlexRaw(const uint8_t* data, size_t len, int baudRate, bool invert);
+
   // ---- 静态工具 ----
 
   /** 码率 → 位时间 (µs) */

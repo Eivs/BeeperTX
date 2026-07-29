@@ -197,6 +197,105 @@
     window.Terminal.log(`preset "${name}" deleted`, 'rx');
   }
 
+  // ---- Sweep 扫描控制 ----
+  let sweepRunning = false;
+
+  async function handleSweepAddr() {
+    if (sweepRunning) return;
+    if (!confirm('Start 追地址码 from current address?')) return;
+    try {
+      const resp = await window.API.sweepStart('addr');
+      if (!resp.code) {
+        setSweepRunning(true);
+        window.Terminal.log('SWEEP addr started: ' + resp.start, 'info');
+      } else {
+        window.Terminal.log('SWEEP start failed: code=' + resp.code, 'error');
+      }
+    } catch(e) {
+      window.Terminal.log('SWEEP error: ' + e.message, 'error');
+    }
+  }
+
+  async function handleSweepFreq() {
+    if (sweepRunning) return;
+    if (!confirm('Start 追频率 from current frequency?\n步进 +25kHz，上限 300MHz')) return;
+    try {
+      const resp = await window.API.sweepStart('freq');
+      if (!resp.code) {
+        setSweepRunning(true);
+        window.Terminal.log('SWEEP freq started: ' + resp.start + 'kHz', 'info');
+      } else {
+        window.Terminal.log('SWEEP start failed: code=' + resp.code, 'error');
+      }
+    } catch(e) {
+      window.Terminal.log('SWEEP error: ' + e.message, 'error');
+    }
+  }
+
+  async function handleSweepStop() {
+    try {
+      await window.API.sweepStop();
+      window.Terminal.log('SWEEP stopped', 'warn');
+    } catch(e) {
+      window.Terminal.log('SWEEP stop error: ' + e.message, 'error');
+    }
+  }
+
+  function setSweepRunning(running) {
+    sweepRunning = running;
+    const addrBtn = document.getElementById('btn-sweep-addr');
+    const freqBtn = document.getElementById('btn-sweep-freq');
+    const stopBtn = document.getElementById('btn-sweep-stop');
+    const statusLine = document.getElementById('sweep-status-line');
+
+    if (addrBtn) addrBtn.disabled = running;
+    if (freqBtn) freqBtn.disabled = running;
+    if (stopBtn) stopBtn.disabled = !running;
+    if (statusLine) statusLine.style.display = running ? 'block' : 'none';
+    if (!running) {
+      const modeText = document.getElementById('sweep-mode-text');
+      const curText  = document.getElementById('sweep-current-text');
+      const cntText  = document.getElementById('sweep-count-text');
+      if (modeText) modeText.textContent = '--';
+      if (curText)  curText.textContent  = '--';
+      if (cntText)  cntText.textContent  = '0';
+    }
+  }
+
+  /** 由 main.js 定时轮询调用, 刷新扫描状态 UI */
+  async function updateSweepUI() {
+    try {
+      const s = await window.API.sweepStatus();
+      if (!s || s.code) return;
+
+      const running = s.running === true || s.running === 'true';
+      setSweepRunning(running);
+
+      if (running) {
+        const modeText = document.getElementById('sweep-mode-text');
+        const curText  = document.getElementById('sweep-current-text');
+        const cntText  = document.getElementById('sweep-count-text');
+
+        if (modeText) {
+          modeText.textContent = (s.mode === 1) ? '追地址码' : '追频率';
+        }
+        if (curText) {
+          if (s.mode === 1) {
+            // 追码: 显示 addr + freq
+            curText.textContent = 'addr=' + s.current;
+          } else {
+            // 追频: s.current 是频率 kHz
+            let freqMHz = (s.current / 1000).toFixed(3);
+            curText.textContent = freqMHz + ' MHz';
+          }
+        }
+        if (cntText) {
+          cntText.textContent = s.totalSent;
+        }
+      }
+    } catch(e) { /* ignore poll errors */ }
+  }
+
   // ---- 初始化入口 ----
   function init() {
     initBtnGroups();
@@ -207,10 +306,15 @@
     document.getElementById('btn-preset-load')?.addEventListener('click', handleLoadPreset);
     document.getElementById('btn-preset-del')?.addEventListener('click', handleDelPreset);
 
+    // Sweep 按钮
+    document.getElementById('btn-sweep-addr')?.addEventListener('click', handleSweepAddr);
+    document.getElementById('btn-sweep-freq')?.addEventListener('click', handleSweepFreq);
+    document.getElementById('btn-sweep-stop')?.addEventListener('click', handleSweepStop);
+
     // 初始加载
     refreshPanel();
 
-    window.ConfigPanel = { refresh: refreshPanel };
+    window.ConfigPanel = { refresh: refreshPanel, updateSweepUI: updateSweepUI };
   }
 
   if (document.readyState === 'loading') {

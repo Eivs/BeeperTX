@@ -59,4 +59,7 @@ private:
   void onWifiSet(AsyncWebServerRequest* req, uint8_t* data, size_t len);
   void onWifiScan(AsyncWebServerRequest* req);
   void onGetLog(AsyncWebServerRequest* req);
+  void onSweepStart(AsyncWebServerRequest* req, uint8_t* data, size_t len);
+  void onSweepStop(AsyncWebServerRequest* req);
+  void onSweepStatus(AsyncWebServerRequest* req);
 };
