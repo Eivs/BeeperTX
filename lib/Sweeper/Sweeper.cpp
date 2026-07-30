@@ -100,47 +100,57 @@ void Sweeper::sweepStep() {
 // ============================================================
 void Sweeper::txAddrBatch() {
   if (m_cfg.encoding == Transmitter::POCSAG) {
-    // ---- POCSAG 批量 (50 地址/批, 共用一个前导码) ----
+    // ---- POCSAG 批量 (50 地址/批, 共用一个前导码; 8 地址子批次检查 STOP) ----
     uint32_t addrs[POCSAG_BATCH_SIZE];
-    int count = 0;
+    int totalCount = 0;
     for (int i = 0; i < POCSAG_BATCH_SIZE; i++) {
       uint32_t addr = m_current + i;
-      if (addr > 0x1FFFFF) break;  // 超出 21-bit 地址范围
-      addrs[count++] = addr;
+      if (addr > 0x1FFFFF) break;
+      addrs[totalCount++] = addr;
     }
 
-    if (count == 0) {
+    if (totalCount == 0) {
       stop();
       return;
     }
 
-    // 记录日志
-    char logLine[128];
-    snprintf(logLine, sizeof(logLine),
-             "SWEEP addr batch: %lu-%lu (%d addrs) POCSAG",
-             (unsigned long)addrs[0],
-             (unsigned long)addrs[count - 1],
-             count);
-    api_log(logLine);
+    // 拆分子批次: 每个子批次独立编码+发射, 中间检查 STOP
+    int sent = 0;
+    while (sent < totalCount) {
+      if (m_mode == IDLE) return;  // STOP 响应
 
-    // 编码批量基带 (invert: NORMAL=反转以补偿 Si4463 极性)
-    static PocsagEncoder encoder;
-    bool invert = (m_cfg.phase == Transmitter::NORMAL);
-    DisplayMode dm = (m_cfg.msgType == Transmitter::NUMERIC)
-                         ? MODE_NUMERIC : MODE_ALPHANUMERIC;
-    int words = encoder.encodeBatch(addrs, count, m_cfg.tone, dm, invert);
+      int sub = SUB_BATCH_SIZE;
+      if (sent + sub > totalCount) sub = totalCount - sent;
 
-    if (words <= 0) {
-      stop();
-      return;
+      // 日志 — 显示本次子批次范围
+      char logLine[128];
+      snprintf(logLine, sizeof(logLine),
+               "SWEEP addr batch: %lu-%lu (%d/%d addrs) POCSAG",
+               (unsigned long)addrs[sent],
+               (unsigned long)addrs[sent + sub - 1],
+               sub, totalCount);
+      api_log(logLine);
+
+      static PocsagEncoder encoder;
+      bool invert = (m_cfg.phase == Transmitter::NORMAL);
+      DisplayMode dm = (m_cfg.msgType == Transmitter::NUMERIC)
+                           ? MODE_NUMERIC : MODE_ALPHANUMERIC;
+      int words = encoder.encodeBatch(addrs + sent, sub, m_cfg.tone, dm, invert);
+
+      if (words <= 0) {
+        stop();
+        return;
+      }
+
+      Serial.print('.');
+      m_tx->sendPocsagRaw(encoder.getBaseband(), words, m_cfg.baudRate);
+      Serial.println(F(" OK"));
+
+      sent += sub;
+      m_totalSent += sub;
     }
 
-    Serial.print('.');
-    m_tx->sendPocsagRaw(encoder.getBaseband(), words, m_cfg.baudRate);
-    Serial.println(F(" OK"));
-
-    m_current = addrs[count - 1] + 1;
-    m_totalSent += count;
+    m_current = addrs[totalCount - 1] + 1;
 
     if (isAddrMax()) {
       api_log("SWEEP addr complete");
@@ -148,60 +158,44 @@ void Sweeper::txAddrBatch() {
     }
 
   } else {
-    // ---- FLEX 批量 (15 地址/批, 帧拼接) ----
-    static uint8_t flexBuf[12000];  // ~15 帧 FLEX (每帧 ~800 字节)
-    size_t totalLen = 0;
-    int count = 0;
+    // ---- FLEX 批量 (15 地址/批, 逐地址编码发射, 中间检查 STOP) ----
     int attempted = 0;
+    int count = 0;
 
     for (int i = 0; i < FLEX_BATCH_SIZE; i++) {
+      if (m_mode == IDLE) return;  // STOP 响应
+
       uint32_t addr = m_current + i;
       if (addr > 0x1FFFFF) break;
       attempted++;
 
-      // 消息 = 地址十进制字符串
       char msg[16];
       snprintf(msg, sizeof(msg), "%lu", (unsigned long)addr);
 
       FlexEncoder encoder;
-      size_t len;
       FlexEncoder::MsgType mt = (m_cfg.msgType == Transmitter::NUMERIC)
                                     ? FlexEncoder::NUMERIC : FlexEncoder::ALPHA;
-      len = encoder.encode(addr, msg, mt);
+      size_t len = encoder.encode(addr, msg, mt);
 
       if (len == 0 || encoder.hasError()) {
         continue;
       }
 
-      if (totalLen + len <= sizeof(flexBuf)) {
-        memcpy(flexBuf + totalLen, encoder.getData(), len);
-        totalLen += len;
-        count++;
-      } else {
-        break;
-      }
+      char logLine[128];
+      snprintf(logLine, sizeof(logLine),
+               "SWEEP addr=%lu FLEX", (unsigned long)addr);
+      api_log(logLine);
+
+      Serial.print('.');
+      bool invert = (m_cfg.phase == Transmitter::NORMAL);
+      m_tx->sendFlexRaw(encoder.getData(), len, m_cfg.baudRate, invert);
+      Serial.println(F(" OK"));
+
+      count++;
+      m_totalSent++;
     }
-
-    if (count == 0) {
-      stop();
-      return;
-    }
-
-    char logLine[128];
-    snprintf(logLine, sizeof(logLine),
-             "SWEEP addr batch: %lu-%lu (%d addrs) FLEX",
-             (unsigned long)m_current,
-             (unsigned long)(m_current + attempted - 1),
-             count);
-    api_log(logLine);
-
-    Serial.print('.');
-    bool invert = (m_cfg.phase == Transmitter::NORMAL);
-    m_tx->sendFlexRaw(flexBuf, totalLen, m_cfg.baudRate, invert);
-    Serial.println(F(" OK"));
 
     m_current += attempted;
-    m_totalSent += count;
 
     if (isAddrMax()) {
       api_log("SWEEP addr complete");

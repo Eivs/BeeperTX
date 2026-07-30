@@ -199,31 +199,53 @@
 
   // ---- Sweep 扫描控制 ----
   let sweepRunning = false;
+  let sweepMode = 'addr';  // 当前选中的模式
 
-  async function handleSweepAddr() {
-    if (sweepRunning) return;
-    if (!confirm('Start 追地址码 from current address?')) return;
-    try {
-      const resp = await window.API.sweepStart('addr');
-      if (!resp.code) {
-        setSweepRunning(true);
-        window.Terminal.log('SWEEP addr started: ' + resp.start, 'info');
-      } else {
-        window.Terminal.log('SWEEP start failed: code=' + resp.code, 'error');
-      }
-    } catch(e) {
-      window.Terminal.log('SWEEP error: ' + e.message, 'error');
+  function getSweepMode() {
+    const addrBtn = document.getElementById('btn-sweep-addr');
+    return (addrBtn && addrBtn.classList.contains('active')) ? 'addr' : 'freq';
+  }
+
+  function initSweepControls() {
+    // 模式按钮组: 二选一互斥
+    const addrBtn = document.getElementById('btn-sweep-addr');
+    const freqBtn = document.getElementById('btn-sweep-freq');
+    if (addrBtn) {
+      addrBtn.addEventListener('click', () => {
+        addrBtn.classList.add('active');
+        if (freqBtn) freqBtn.classList.remove('active');
+      });
+    }
+    if (freqBtn) {
+      freqBtn.addEventListener('click', () => {
+        freqBtn.classList.add('active');
+        if (addrBtn) addrBtn.classList.remove('active');
+      });
+    }
+
+    // START / STOP 切换按钮
+    const toggleBtn = document.getElementById('btn-sweep-toggle');
+    if (toggleBtn) {
+      toggleBtn.addEventListener('click', () => {
+        if (sweepRunning) {
+          handleSweepStop();
+        } else {
+          handleSweepStart();
+        }
+      });
     }
   }
 
-  async function handleSweepFreq() {
+  async function handleSweepStart() {
     if (sweepRunning) return;
-    if (!confirm('Start 追频率 from current frequency?\n步进 +25kHz，上限 300MHz')) return;
+    const mode = getSweepMode();
+    const label = (mode === 'addr') ? 'Address Sweep' : 'Frequency Sweep';
+    if (!confirm('Start ' + label + '?')) return;
     try {
-      const resp = await window.API.sweepStart('freq');
+      const resp = await window.API.sweepStart(mode);
       if (!resp.code) {
-        setSweepRunning(true);
-        window.Terminal.log('SWEEP freq started: ' + resp.start + 'kHz', 'info');
+        setSweepRunningUI(true);
+        window.Terminal.log('SWEEP ' + mode + ' started: ' + resp.start, 'info');
       } else {
         window.Terminal.log('SWEEP start failed: code=' + resp.code, 'error');
       }
@@ -241,17 +263,49 @@
     }
   }
 
-  function setSweepRunning(running) {
+  /** 启用/禁用配置面板控件 (扫中禁用) */
+  function setConfigEnabled(enabled) {
+    // 按钮组
+    document.querySelectorAll('#config-panel .btn-group[data-field] button').forEach(b => {
+      b.disabled = !enabled;
+    });
+    // 输入框 (跳过 sweep 区域内的)
+    ['inp-freq','inp-power','inp-addr'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.disabled = !enabled;
+    });
+    // Send 按钮
+    const sendBtn = document.getElementById('btn-send');
+    if (sendBtn) sendBtn.disabled = !enabled;
+    // 预设按钮
+    ['btn-preset-save','btn-preset-load','btn-preset-del'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.disabled = !enabled;
+    });
+  }
+
+  function setSweepRunningUI(running) {
     sweepRunning = running;
-    const addrBtn = document.getElementById('btn-sweep-addr');
-    const freqBtn = document.getElementById('btn-sweep-freq');
-    const stopBtn = document.getElementById('btn-sweep-stop');
+    const toggleBtn = document.getElementById('btn-sweep-toggle');
+    const modeBtns = document.querySelectorAll('#btn-sweep-addr, #btn-sweep-freq');
     const statusLine = document.getElementById('sweep-status-line');
 
-    if (addrBtn) addrBtn.disabled = running;
-    if (freqBtn) freqBtn.disabled = running;
-    if (stopBtn) stopBtn.disabled = !running;
+    // 模式按钮: 扫中禁用
+    modeBtns.forEach(b => b.disabled = running);
+
+    // 切换按钮
+    if (toggleBtn) {
+      toggleBtn.textContent = running ? 'STOP' : 'START';
+      toggleBtn.classList.toggle('btn-primary', !running);
+      toggleBtn.classList.toggle('btn-error', running);
+    }
+
+    // 状态行
     if (statusLine) statusLine.style.display = running ? 'block' : 'none';
+
+    // 配置面板控件
+    setConfigEnabled(!running);
+
     if (!running) {
       const modeText = document.getElementById('sweep-mode-text');
       const curText  = document.getElementById('sweep-current-text');
@@ -269,7 +323,7 @@
       if (!s || s.code) return;
 
       const running = s.running === true || s.running === 'true';
-      setSweepRunning(running);
+      setSweepRunningUI(running);
 
       if (running) {
         const modeText = document.getElementById('sweep-mode-text');
@@ -277,14 +331,12 @@
         const cntText  = document.getElementById('sweep-count-text');
 
         if (modeText) {
-          modeText.textContent = (s.mode === 1) ? '追地址码' : '追频率';
+          modeText.textContent = (s.mode === 1) ? 'Addr' : 'Freq';
         }
         if (curText) {
           if (s.mode === 1) {
-            // 追码: 显示 addr + freq
             curText.textContent = 'addr=' + s.current;
           } else {
-            // 追频: s.current 是频率 kHz
             let freqMHz = (s.current / 1000).toFixed(3);
             curText.textContent = freqMHz + ' MHz';
           }
@@ -306,10 +358,8 @@
     document.getElementById('btn-preset-load')?.addEventListener('click', handleLoadPreset);
     document.getElementById('btn-preset-del')?.addEventListener('click', handleDelPreset);
 
-    // Sweep 按钮
-    document.getElementById('btn-sweep-addr')?.addEventListener('click', handleSweepAddr);
-    document.getElementById('btn-sweep-freq')?.addEventListener('click', handleSweepFreq);
-    document.getElementById('btn-sweep-stop')?.addEventListener('click', handleSweepStop);
+    // Sweep 控制
+    initSweepControls();
 
     // 初始加载
     refreshPanel();

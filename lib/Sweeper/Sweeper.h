@@ -37,6 +37,7 @@ public:
   static const uint32_t DEFAULT_FREQ_MAX_KHZ  = 300000; //!< 默认频率上限 (kHz)
   static const int    POCSAG_BATCH_SIZE = 50;           //!< POCSAG 每批地址数
   static const int    FLEX_BATCH_SIZE   = 15;           //!< FLEX 每批地址数
+  static const int    SUB_BATCH_SIZE    = 8;            //!< 子批次大小 (在此粒度检查 STOP)
   static const int    BATCH_GAP_MS      = 10;           //!< 批次间隔 (ms)
 
   /** 发射参数 (从当前 TxConfig 继承) */
