@@ -139,6 +139,11 @@ static void printSi4463Info() {
 }
 
 // ============================================================
+// 业务主循环任务 (core 0) — 定义见文件底部 (setup 中创建)
+// ============================================================
+static void loopMainTask(void* arg);
+
+// ============================================================
 // setup
 // ============================================================
 void setup() {
@@ -207,21 +212,38 @@ void setup() {
   api_triggerScan();  // 启动后台 WiFi 扫描, 供 Web 配网使用
   api_log("BeeperTX started");
   Serial.println();
+
+  // ---- 6. 业务主循环 (core 0) ----
+  // txTask (core 1) 发射时位敲击独占 core 1, 业务 loop 若留在 Arduino
+  // loopTask (core 1) 会被饿死 (Web/串口/STOP 无响应)。迁到 core 0:
+  // WiFi/AsyncTCP 也跑 core 0 且优先级更高 (prio 3), 但 txTask 不再
+  // 抢占本任务; 发射期间 Web/串口/STOP 全部可用。
+  xTaskCreatePinnedToCore(loopMainTask, "loopMain", 10240, nullptr, 1, nullptr, 0);
 }
 
 // ============================================================
-// loop
+// loopMainTask — 业务主循环 (core 0, 优先级 1)
+// ============================================================
+static void loopMainTask(void*) {
+  for (;;) {
+    if (g_radioReady) {
+      Si446x_SERVICE();
+    } else {
+      radioRetryTick();  // 射频离线: 后台重试, 不阻塞其余功能
+    }
+    s_wifi.loop();
+    s_serial.loop();
+    api_loop();
+    s_sweeper.loop();  // Sweeper 非阻塞调度 (规格 §8.4)
+    vTaskDelay(1);
+  }
+}
+
+// ============================================================
+// loop (Arduino loopTask, core 1) — 空转
 // ============================================================
 void loop() {
-  if (g_radioReady) {
-    Si446x_SERVICE();
-  } else {
-    radioRetryTick();  // 射频离线: 后台重试, 不阻塞其余功能
-  }
-  s_wifi.loop();
-  s_serial.loop();
-  api_loop();
-  s_sweeper.loop();  // Sweeper 非阻塞调度 (规格 §8.4)
-
-  // Web 服务器由 AsyncWebServer 后台处理, 无需显式 loop()
+  // 业务主体已迁移到 core 0 (loopMainTask)。本函数保留空转以维持
+  // Arduino 框架契约; txTask (core 1) 发射时与本函数抢占, 无业务影响。
+  vTaskDelay(10);
 }

@@ -54,24 +54,34 @@ public:
   explicit Transmitter(int txPin);
 
   /**
-   * @brief 发射一条消息 (自动选择编码器并调度 Direct TX)
+   * @brief 发射一条消息 (自动选择编码器并调度 Direct TX)。
+   * @return true=已入队 (异步执行), false=队列满 (稍后重试)
    */
-  void send(const Config& cfg);
+  bool send(const Config& cfg);
 
   /**
    * @brief 直接发送已编码的 POCSAG 基带码字数组 (已含前导码)。
    *        一次 enterTx→send→exitTx, 不做额外编码/反相。
    *        供 Sweeper 批量追码使用 (PocsagEncoder::encodeBatch 输出),
-   *        反相已由编码器处理。
+   *        反相已由编码器处理。Job 深拷贝, 返回后 baseband 可复用。
+   * @return true=已入队 (异步执行), false=队列满或码字超上限
    */
-  void sendPocsagRaw(const unsigned long* baseband, int wordCount, int baudRate);
+  bool sendPocsagRaw(const unsigned long* baseband, int wordCount, int baudRate);
 
   /**
    * @brief 直接发送已编码的 FLEX 字节数组。
    *        一次 enterTx→send→exitTx, 可选字节级反相。
-   *        供 Sweeper 逐地址追码使用 (FlexEncoder 输出)。
+   *        供 Sweeper 逐地址追码使用 (FlexEncoder 输出)。Job 深拷贝。
+   * @return true=已入队 (异步执行), false=队列满或数据超上限
    */
-  void sendFlexRaw(const uint8_t* data, size_t len, int baudRate, bool invert);
+  bool sendFlexRaw(const uint8_t* data, size_t len, int baudRate, bool invert);
+
+  /**
+   * @brief 查询发射通道是否忙 (队列有积压 或 txTask 正在发射)。
+   *        供 Sweeper/API 调度门控: 忙时暂停发起下一批,
+   *        保证追频路径的 Si446x_setFrequencyKHz 不与 Direct TX 冲突。
+   */
+  bool isBusy() const;
 
   // ---- 静态工具 ----
 
@@ -106,25 +116,32 @@ private:
     RAW_POCSAG = 1,  //!< Sweeper 批量追码
     RAW_FLEX   = 2,  //!< Sweeper 逐地址追码
   };
+
+  // Job 内嵌数据 (深拷贝), 调用方入队后即可复用其编码器缓冲。
+  static const int JOB_MAX_POCSAG_WORDS = 128;  //!< 8 地址子批+前导码 ≈35 码字, 余量充足
+  static const int JOB_MAX_FLEX_BYTES   = 800;  //!< FlexEncoder BUFFER_SIZE
+
   struct Job {
     JobType type;
-    Config  cfg;                     // POCSAG
-    const unsigned long* baseband;   // RAW_POCSAG
-    int     wordCount;
-    const uint8_t* data;             // RAW_FLEX
-    size_t  len;
     int     baudRate;
     bool    invert;
+    // 显式默认构造: Config 带默认成员初始化器会使 union 默认构造被删除
+    Job() : type(JobType::POCSAG), baudRate(0), invert(false) {}
+    union {
+      Config cfg;                                                // POCSAG
+      struct { unsigned long words[JOB_MAX_POCSAG_WORDS]; int wordCount; } pocsag;  // RAW_POCSAG
+      struct { uint8_t  data[JOB_MAX_FLEX_BYTES]; size_t len; } flex;          // RAW_FLEX
+    };
   };
-  QueueHandle_t     m_queue = nullptr;  //!< 单槽任务队列
-  TaskHandle_t      m_task  = nullptr;  //!< txTask 句柄
-  SemaphoreHandle_t m_done  = nullptr;  //!< 完成信号量 (计数, 初值 0)
+  QueueHandle_t m_queue = nullptr;   //!< 任务队列 (深度 3)
+  TaskHandle_t  m_task  = nullptr;   //!< txTask 句柄
+  volatile bool m_txActive = false;  //!< txTask 正在发射 (isBusy 门控用, 跨核 volatile)
 
-  void ensureTask();                        //!< 懒创建队列/任务/信号量
+  bool ensureTask();                       //!< 懒创建队列/任务 (失败返回 false)
   static void txTaskEntry(void* arg);
-  void txTaskMain();                        //!< 任务主体: 收 Job → 发送 → give
-  void submit(Job& job);                    //!< 入队 + 等待完成 (同步语义)
-  void feedWatchdog();                      //!< 喂 txTask 自身的 WDT (发射期间安全网)
+  void txTaskMain();                       //!< 任务主体: 收 Job → 发送
+  bool enqueue(Job& job);                  //!< 非阻塞入队 (深拷贝), 队列满返回 false
+  void feedWatchdog();                     //!< 喂 txTask 自身的 WDT (发射期间安全网)
 
   // ---- 任务侧实际发送 (在 txTask 上下文执行) ----
   void sendPocsagRawImpl(const unsigned long* baseband, int wordCount, int baudRate);

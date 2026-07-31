@@ -46,6 +46,9 @@ int Sweeper::start(const Config& cfg) {
   m_mode      = cfg.mode;
   m_current   = (cfg.mode == ADDR_SWEEP) ? cfg.addrStart : cfg.freqStartKHz;
   m_done      = 0;
+  m_batchBase = 0;
+  m_batchSize = 0;
+  m_batchLeft = 0;
   m_origFreqKHz = (cfg.mode == FREQ_SWEEP) ? cfg.freqStartKHz : 0;
   m_nextTxMs  = millis();  // 立即开始第一轮
 
@@ -125,6 +128,11 @@ void Sweeper::loop() {
     return;
   }
 
+  // 异步门控: txTask 正在发射/有积压时暂停发起下一批。
+  // 保证 Si4463 SPI 独占 (追频 setFrequency 不会与 Direct TX 冲突),
+  // 且追码追频队列最多积压有限批次, STOP 后残余最多 1-2 批。
+  if (m_tx->isBusy()) return;
+
   // 按节拍调度: 批次间 intervalMs 间隔 (规格 §7.3)
   if (millis() >= m_nextTxMs) {
     sweepStep();
@@ -159,82 +167,101 @@ void Sweeper::txAddrBatch() {
     // ---- POCSAG 批量 (POCSAG_BATCH_SIZE 地址/批, 共享一个前导码; 8 地址/组) ----
     // 消息 = 地址数字串, 固定 NUMERIC 编码 (规格 §1.2 纯数字消息)。
     // 批量仅支持 ≤5 位数字 (1 CW) 且批内帧号不冲突; 否则降级逐地址标准发射。
-    uint32_t addrs[POCSAG_BATCH_SIZE];
-    int totalCount = 0;
-    for (int i = 0; i < POCSAG_BATCH_SIZE; i++) {
-      uint32_t addr = m_current + i;
-      if (addr > m_cfg.addrEnd) break;
-      addrs[totalCount++] = addr;
+    // 异步: send* 仅入队 (深拷贝) 即返回, 队列满时保留批内进度, 下帧续传。
+    if (m_batchLeft == 0) {
+      m_batchBase = m_current;
+      m_batchSize = 0;
+      for (int i = 0; i < POCSAG_BATCH_SIZE; i++) {
+        uint32_t a = m_batchBase + i;
+        if (a > m_cfg.addrEnd) break;
+        m_batchSize++;
+      }
+      if (m_batchSize == 0) {
+        stop();
+        return;
+      }
+      m_batchLeft = m_batchSize;
     }
 
-    if (totalCount == 0) {
-      stop();
-      return;
-    }
-
-    // 拆分子批次: 每个子批次独立编码+发射, 中间检查 STOP
     PocsagEncoder& encoder = m_batchEncoder;
     bool invert = (m_cfg.phase == PhaseType::NORMAL);
 
-    int sent = 0;
-    while (sent < totalCount) {
+    bool degraded = false;
+    while (m_batchLeft > 0) {
       if (m_mode == IDLE) return;  // STOP 响应
 
-      int sub = SUB_BATCH_SIZE;
-      if (sent + sub > totalCount) sub = totalCount - sent;
+      int sub = (m_batchLeft > SUB_BATCH_SIZE) ? SUB_BATCH_SIZE : (int)m_batchLeft;
+      // 当前子批地址: 批起始 + (本批总数 - 剩余数)
+      uint32_t addrs[SUB_BATCH_SIZE];
+      uint32_t batchStart = m_batchBase + (m_batchSize - m_batchLeft);
+      for (int i = 0; i < sub; i++) addrs[i] = batchStart + i;
 
       int addrEncoded = 0;
-      int words = encoder.encodeBatch(addrs + sent, sub,
+      int words = encoder.encodeBatch(addrs, sub,
                                       static_cast<int>(m_cfg.tone),  // 库边界: Pocsag 用 int 功能码
                                       MODE_NUMERIC, invert, &addrEncoded);
 
       if (words > 0 && addrEncoded == sub) {
-        // 批量发射成功
+        // 批量发射成功 (异步入队)
+        if (!m_tx->sendPocsagRaw(encoder.getBaseband(), words, m_cfg.baudRate)) {
+          return;  // 队列满: 批内进度保留, 下帧续传
+        }
         char logLine[128];
         snprintf(logLine, sizeof(logLine),
                  "SWEEP addr batch: %lu-%lu (%d addrs) POCSAG",
-                 (unsigned long)addrs[sent],
-                 (unsigned long)addrs[sent + sub - 1], sub);
+                 (unsigned long)addrs[0],
+                 (unsigned long)addrs[sub - 1], sub);
         api_log(logLine);
 
         Serial.print('.');
-        m_tx->sendPocsagRaw(encoder.getBaseband(), words, m_cfg.baudRate);
         Serial.println(F(" OK"));
 
-        sent += sub;
+        m_batchLeft -= sub;
         m_done += sub;
       } else {
-        // 降级: 消息 >5 位或帧冲突, 逐地址标准发射 (支持任意位数/字母模式)
-        for (int i = 0; i < sub; i++) {
-          if (m_mode == IDLE) return;  // STOP 响应
-
-          Transmitter::Config cfg;
-          cfg.encoding = EncodingType::POCSAG;
-          cfg.phase    = m_cfg.phase;
-          cfg.tone     = m_cfg.tone;
-          cfg.baudRate = m_cfg.baudRate;
-          cfg.address  = addrs[sent + i];
-          cfg.msgType  = m_cfg.msgType;
-          snprintf(cfg.message, sizeof(cfg.message), "%lu",
-                   (unsigned long)addrs[sent + i]);
-
-          char logLine[128];
-          snprintf(logLine, sizeof(logLine),
-                   "SWEEP addr=%lu POCSAG deg", (unsigned long)addrs[sent + i]);
-          api_log(logLine);
-
-          m_tx->send(cfg);
-          m_done++;
-        }
-        sent += sub;
+        degraded = true;
+        break;
       }
     }
 
-    m_current = addrs[totalCount - 1] + 1;
+    if (degraded && m_batchLeft > 0) {
+      // 降级: 消息 >5 位或帧冲突, 逐地址标准发射 (支持任意位数/字母模式)。
+      // 连续入队 (深拷贝) 直到队列满, 余量下帧续传。
+      while (m_batchLeft > 0) {
+        if (m_mode == IDLE) return;  // STOP 响应
 
-    if (isAddrMax()) {
-      api_log("SWEEP addr complete");
-      stop();
+        uint32_t addr = m_batchBase + (m_batchSize - m_batchLeft);
+        Transmitter::Config cfg;
+        cfg.encoding = EncodingType::POCSAG;
+        cfg.phase    = m_cfg.phase;
+        cfg.tone     = m_cfg.tone;
+        cfg.baudRate = m_cfg.baudRate;
+        cfg.address  = addr;
+        cfg.msgType  = m_cfg.msgType;
+        snprintf(cfg.message, sizeof(cfg.message), "%lu",
+                 (unsigned long)addr);
+
+        if (!m_tx->send(cfg)) return;  // 队列满: 下帧续传
+
+        char logLine[128];
+        snprintf(logLine, sizeof(logLine),
+                 "SWEEP addr=%lu POCSAG deg", (unsigned long)addr);
+        api_log(logLine);
+
+        Serial.print('.');
+        m_batchLeft--;
+        m_done++;
+      }
+    }
+
+    if (m_batchLeft == 0) {
+      m_current = m_batchBase + m_batchSize;
+      m_batchBase = 0;
+      m_batchSize = 0;
+      if (isAddrMax()) {
+        api_log("SWEEP addr complete");
+        stop();
+      }
     }
 
   } else {
@@ -264,12 +291,16 @@ void Sweeper::txAddrBatch() {
 
       Serial.print('.');
       bool invert = (m_cfg.phase == PhaseType::NORMAL);
-      m_tx->sendFlexRaw(encoder.getData(), len, m_cfg.baudRate, invert);
+      if (!m_tx->sendFlexRaw(encoder.getData(), len, m_cfg.baudRate, invert)) {
+        return;  // 队列满: 下帧重试 (m_current 未推进)
+      }
       Serial.println(F(" OK"));
       m_done++;
+      m_current = addr + 1;
+    } else {
+      // 编码失败也前进, 避免卡死 (异步下无法即时重试)
+      m_current = addr + 1;
     }
-
-    m_current = addr + 1;
 
     if (isAddrMax()) {
       api_log("SWEEP addr complete");
@@ -289,7 +320,7 @@ void Sweeper::txFreqOnce() {
     return;
   }
 
-  // 设置新频率 (此时 Si4463 处于 IDLE, 规格 §13.3)
+  // 设置新频率 (此时 txTask 空闲 — loop() 的 isBusy 门控保证, 规格 §13.3)
   Si446x_setFrequencyKHz(m_current);
   // 短暂等待 PLL 锁定 (Si4463 锁定时序 ~200µs, 1ms 有足够余量)
   delay(1);
@@ -309,13 +340,13 @@ void Sweeper::txFreqOnce() {
   strncpy(cfg.message, freqStr, sizeof(cfg.message) - 1);
   cfg.message[sizeof(cfg.message) - 1] = '\0';
 
+  if (!m_tx->send(cfg)) return;  // 队列满: 下帧重试 (m_current 未推进)
+
   char logLine[128];
   snprintf(logLine, sizeof(logLine),
            "SWEEP freq=%lukHz addr=%lu",
            (unsigned long)m_current, (unsigned long)cfg.address);
   api_log(logLine);
-
-  m_tx->send(cfg);
 
   m_done++;
   m_current += m_cfg.freqStepKHz;

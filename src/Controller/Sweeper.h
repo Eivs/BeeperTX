@@ -108,6 +108,11 @@ private:
   uint32_t m_origFreqKHz;   // 追频起始频率 (结束/停止时恢复)
   uint32_t m_nextTxMs;      // 下次发射时间戳 (millis)
 
+  // POCSAG 批内进度 (异步发射: 整批 16 地址可能跨多帧入队, 队列满时续传)
+  uint32_t m_batchBase = 0;  //!< 当前整批起始地址
+  uint32_t m_batchSize = 0;  //!< 当前整批地址总数 (≤ POCSAG_BATCH_SIZE)
+  uint32_t m_batchLeft = 0;  //!< 批内剩余未入队地址数
+
   // POCSAG 批量编码器作为实例成员 (.bss), 消除函数内 static 非重入状态
   PocsagEncoder m_batchEncoder;
 

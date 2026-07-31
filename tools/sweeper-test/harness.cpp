@@ -20,9 +20,28 @@ uint32_t g_freqSet[64];   // Si446x_setFrequencyKHz 调用序列
 int g_freqSetCount = 0;
 int g_logCount = 0;
 
-void Transmitter::send(const Config& cfg) { (void)cfg; g_sendCalls++; }
-void Transmitter::sendPocsagRaw(const unsigned long*, int, int) { g_rawPocsagCalls++; }
-void Transmitter::sendFlexRaw(const uint8_t*, size_t, int, bool) { g_rawFlexCalls++; }
+// 异步模拟: g_txBusy=true 模拟 txTask 发射中 (isBusy 门控);
+// g_txQueueFull=true 模拟队列满 (enqueue 失败, 调用方应保留进度下帧续传)
+bool g_txBusy = false;
+bool g_txQueueFull = false;
+
+bool Transmitter::send(const Config& cfg) {
+  (void)cfg;
+  if (g_txQueueFull) return false;
+  g_sendCalls++;
+  return true;
+}
+bool Transmitter::sendPocsagRaw(const unsigned long*, int, int) {
+  if (g_txQueueFull) return false;
+  g_rawPocsagCalls++;
+  return true;
+}
+bool Transmitter::sendFlexRaw(const uint8_t*, size_t, int, bool) {
+  if (g_txQueueFull) return false;
+  g_rawFlexCalls++;
+  return true;
+}
+bool Transmitter::isBusy() const { return g_txBusy; }
 void Si446x_setFrequencyKHz(uint32_t f) { g_freqSet[g_freqSetCount++] = f; }
 void api_log(const char*) { g_logCount++; }
 
@@ -161,6 +180,85 @@ int main() {
     Sweeper::Config c3 = freqCfg(110000, 150000);  // 低于 119000
     sw.stop();
     check("freq 低于下限返回 -2", sw.start(c3) == -2);
+  }
+
+  printf("== 场景 6: isBusy 门控 (txTask 发射期间暂停发起下一批) ==\n");
+  {
+    g_millis = 0;
+    g_rawPocsagCalls = 0;
+    g_sendCalls = 0;
+    Sweeper sw;
+    Transmitter tx;
+    sw.setTransmitter(&tx);
+    Sweeper::Config c = addrCfg(1000, 1016);
+    sw.start(c);
+
+    g_txBusy = true;   // 模拟 txTask 正在发射
+    sw.loop();
+    check("isBusy 期间不推进 (done=0)", sw.getStatus().done == 0);
+    check("isBusy 期间无入队", g_rawPocsagCalls == 0);
+
+    g_txBusy = false;  // 发射完成, 队列空闲
+    sw.loop();
+    check("空闲后整批 done=16", sw.getStatus().done == 16);
+    check("空闲后 2 子批入队", g_rawPocsagCalls == 2);
+    g_txBusy = false;
+  }
+
+  printf("== 场景 7: 队列满续传 (enqueue 失败保留批内进度) ==\n");
+  {
+    g_millis = 0;
+    g_rawPocsagCalls = 0;
+    g_sendCalls = 0;
+    Sweeper sw;
+    Transmitter tx;
+    sw.setTransmitter(&tx);
+    Sweeper::Config c = addrCfg(1000, 1016);
+    sw.start(c);
+
+    g_txQueueFull = true;  // 队列满: 首个子批 enqueue 失败
+    sw.loop();
+    check("队列满: 首子批未入队 done=0", sw.getStatus().done == 0);
+    check("队列满: current 未推进", sw.getStatus().current == 1000);
+
+    g_txQueueFull = false;
+    g_millis += 600;       // 越过节流时间
+    sw.loop();
+    check("续传后整批 done=16", sw.getStatus().done == 16);
+    check("续传后 current=1016", sw.getStatus().current == 1016);
+    g_txQueueFull = false;
+    g_millis = 0;
+  }
+
+  printf("== 场景 8: FLEX 逐地址 + 队列满重试 ==\n");
+  {
+    g_millis = 0;
+    g_rawFlexCalls = 0;
+    Sweeper sw;
+    Transmitter tx;
+    sw.setTransmitter(&tx);
+    Sweeper::Config c = addrCfg(5000, 5001);  // 2 步 FLEX
+    c.encoding = EncodingType::FLEX;
+    c.msgType = MsgType::NUMERIC;
+    sw.start(c);
+
+    g_txQueueFull = true;
+    sw.loop();  // FLEX 首地址 enqueue 失败
+    check("FLEX 队列满: done=0 且 current 未推进", sw.getStatus().done == 0 &&
+          sw.getStatus().current == 5000);
+
+    g_txQueueFull = false;
+    g_millis += 600;
+    sw.loop();  // 发 5000
+    check("FLEX 第1地址 done=1", sw.getStatus().done == 1);
+    check("FLEX 第1地址 current=5001", sw.getStatus().current == 5001);
+
+    g_millis += 600;
+    sw.loop();  // 发 5001 → 完成
+    check("FLEX 完成后 done=2", sw.getStatus().done == 2);
+    check("FLEX 完成后 running=false", !sw.getStatus().running);
+    g_txQueueFull = false;
+    g_millis = 0;
   }
 
   printf("\n结果: %d PASS, %d FAIL\n", g_pass, g_fail);

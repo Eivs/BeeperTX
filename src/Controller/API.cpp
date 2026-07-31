@@ -642,8 +642,17 @@ void CommandDispatcher::loop() {
       log(buf);
     }
 
-    m_tx->send(makeTxConfig());
-    m_txCount++;
+    if (m_tx->send(makeTxConfig())) {
+      m_txCount++;
+    } else {
+      // 队列满 (可能 Sweeper 占用): 恢复消息并重新挂起待发射, 下帧重试
+      if (msgOverride) {
+        strncpy(m_config.message, savedMsg, sizeof(m_config.message) - 1);
+      }
+      m_queue.setPendingTx(pendingMsg[0] ? pendingMsg : nullptr);
+      log("TX deferred (tx queue busy)");
+      return;
+    }
 
     if (msgOverride) {
       strncpy(m_config.message, savedMsg, sizeof(m_config.message) - 1);

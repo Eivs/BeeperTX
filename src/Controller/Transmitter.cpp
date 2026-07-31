@@ -10,13 +10,19 @@
 // 后台发射任务 (core 1) — 位敲击移出 loopTask
 // ============================================================
 
-void Transmitter::ensureTask() {
-  if (m_queue) return;
-  m_queue = xQueueCreate(1, sizeof(Job));
-  m_done  = xSemaphoreCreateCounting(1, 0);
-  // core 1: 与 loopTask 同核但优先级更高, 发射时独占该核;
-  // core 0 (WiFi/AsyncTCP/Web) 完全不受影响。
-  xTaskCreatePinnedToCore(txTaskEntry, "txTask", 4096, this, 3, &m_task, 1);
+bool Transmitter::ensureTask() {
+  if (m_queue) return true;
+  // 深度 3: 允许少量积压 (Sweeper 连续批次), 同时防止无界排队。
+  m_queue = xQueueCreate(3, sizeof(Job));
+  if (!m_queue) return false;
+  // core 1: 位敲击独占该核不被抢占 (与 loopTask 原同核, 但业务
+  // loop 已迁至 core 0); core 0 (WiFi/AsyncTCP/Web) 完全不受影响。
+  if (xTaskCreatePinnedToCore(txTaskEntry, "txTask", 4096, this, 3, &m_task, 1) != pdPASS) {
+    vQueueDelete(m_queue);
+    m_queue = nullptr;
+    return false;
+  }
+  return true;
 }
 
 void Transmitter::txTaskEntry(void* arg) {
@@ -32,19 +38,27 @@ void Transmitter::txTaskMain() {
 
   Job job;
   while (xQueueReceive(m_queue, &job, portMAX_DELAY)) {
+    m_txActive = true;  // isBusy 门控: 发射期间让 Sweeper 暂停发起下一批
     switch (job.type) {
       case JobType::POCSAG:     sendPocsag(job.cfg); break;
-      case JobType::RAW_POCSAG: sendPocsagRawImpl(job.baseband, job.wordCount, job.baudRate); break;
-      case JobType::RAW_FLEX:   sendFlexRawImpl(job.data, job.len, job.baudRate, job.invert); break;
+      case JobType::RAW_POCSAG: sendPocsagRawImpl(job.pocsag.words, job.pocsag.wordCount, job.baudRate); break;
+      case JobType::RAW_FLEX:   sendFlexRawImpl(job.flex.data, job.flex.len, job.baudRate, job.invert); break;
     }
-    xSemaphoreGive(m_done);
+    m_txActive = false;
   }
 }
 
-void Transmitter::submit(Job& job) {
-  // 入队 (单槽, 等槽空闲) 后阻塞等待发送完成, 保持同步语义。
-  xQueueSend(m_queue, &job, portMAX_DELAY);
-  xSemaphoreTake(m_done, portMAX_DELAY);
+bool Transmitter::enqueue(Job& job) {
+  // 非阻塞入队 (深拷贝)。队列满返回 false, 调用方下帧重试。
+  if (!ensureTask()) return false;
+  return xQueueSend(m_queue, &job, 0) == pdPASS;
+}
+
+bool Transmitter::isBusy() const {
+  // 队列有积压 或 txTask 正在发射 → 调用方 (Sweeper/API) 应等待。
+  // 保证追频路径的 Si446x_setFrequencyKHz 不会与 txTask 的 Direct TX 冲突。
+  if (!m_queue) return false;
+  return uxQueueMessagesWaiting(m_queue) > 0 || m_txActive;
 }
 
 void Transmitter::feedWatchdog() {
@@ -294,40 +308,39 @@ void Transmitter::sendFlex(const Config& cfg) {
 }
 
 // ============================================================
-// 公开 API — 统一入口 (入队到 txTask 执行, 同步等待)
+// 公开 API — 统一入口 (非阻塞入队, 由 txTask 异步执行)
 // ============================================================
-void Transmitter::send(const Config& cfg) {
-  ensureTask();
+bool Transmitter::send(const Config& cfg) {
   Job job;
   job.type = JobType::POCSAG;
-  job.cfg  = cfg;
-  submit(job);
+  job.cfg  = cfg;  // 深拷贝 (含 message[256])
+  return enqueue(job);
 }
 
 // ============================================================
-// 原始发送 — Sweeper 等模块直接使用已编码数据 (入队到 txTask)
+// 原始发送 — Sweeper 等模块直接使用已编码数据 (深拷贝入队)
 // ============================================================
-void Transmitter::sendPocsagRaw(const unsigned long* baseband, int wordCount,
+bool Transmitter::sendPocsagRaw(const unsigned long* baseband, int wordCount,
                                  int baudRate) {
-  ensureTask();
+  if (!baseband || wordCount <= 0 || wordCount > JOB_MAX_POCSAG_WORDS) return false;
   Job job;
-  job.type      = JobType::RAW_POCSAG;
-  job.baseband  = baseband;
-  job.wordCount = wordCount;
-  job.baudRate  = baudRate;
-  submit(job);
+  job.type = JobType::RAW_POCSAG;
+  job.baudRate = baudRate;
+  for (int i = 0; i < wordCount; i++) job.pocsag.words[i] = baseband[i];
+  job.pocsag.wordCount = wordCount;
+  return enqueue(job);
 }
 
-void Transmitter::sendFlexRaw(const uint8_t* data, size_t len,
+bool Transmitter::sendFlexRaw(const uint8_t* data, size_t len,
                                int baudRate, bool invert) {
-  ensureTask();
+  if (!data || len == 0 || len > JOB_MAX_FLEX_BYTES) return false;
   Job job;
   job.type     = JobType::RAW_FLEX;
-  job.data     = data;
-  job.len      = len;
   job.baudRate = baudRate;
   job.invert   = invert;
-  submit(job);
+  memcpy(job.flex.data, data, len);
+  job.flex.len = len;
+  return enqueue(job);
 }
 
 // ---- 任务侧实际发送实现 (原逻辑, 在 txTask 上下文执行) ----
