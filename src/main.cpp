@@ -56,6 +56,10 @@ WebServer*     s_web = nullptr;
 // ============================================================
 // Si4463 初始化
 // ============================================================
+static bool g_radioReady = false;    //!< Si4463 可用状态 (降级模式: 失败后后台重试)
+static uint32_t s_radioRetryMs = 0;  //!< 上次重试时间戳
+static const uint32_t RADIO_RETRY_MS = 10000;  //!< 重试间隔
+
 static bool initSi4463() {
   Si446x_setPins(PIN_CS, PIN_SDN, PIN_NIRQ, PIN_TX_DATA,
                  PIN_SCLK, PIN_MOSI, PIN_MISO);
@@ -68,7 +72,7 @@ static bool initSi4463() {
   Si446x_getInfo(&info);
   if (info.part != 0x4463) {
     Serial.printf("Si4463 init FAILED: expected 0x4463, got 0x%04X\n", info.part);
-    Serial.println("Check wiring & power. System halted.");
+    Serial.println("Check wiring & power.");
     return false;
   }
 
@@ -78,6 +82,26 @@ static bool initSi4463() {
   // 初始频率和功率由 api_init() 中的默认配置决定
   // 通过 api_dispatch 的 SET_CONFIG 命令应用
   return true;
+}
+
+// ============================================================
+// Si4463 后台重试 (loop 调用, 非阻塞) — 硬件故障时不挂死系统
+// ============================================================
+static void printSi4463Info();  // 定义见下 (重试成功后打印诊断)
+
+static void radioRetryTick() {
+  if (g_radioReady) return;
+  uint32_t now = millis();
+  if (now - s_radioRetryMs < RADIO_RETRY_MS) return;
+  s_radioRetryMs = now;
+
+  Serial.println(F("RADIO: retrying Si4463 init..."));
+  if (initSi4463()) {
+    g_radioReady = true;
+    printSi4463Info();
+    api_setRadioReady(true);
+    Serial.println(F("RADIO: online"));
+  }
 }
 
 // ============================================================
@@ -136,10 +160,15 @@ void setup() {
   Serial.printf("Chip Revision: %d\n", ESP.getChipRevision());
 
   // ---- 1. Si4463 初始化 ----
-  if (!initSi4463()) {
-    while (1) { delay(1000); }
+  // 失败不挂死系统: 进入降级模式 (WiFi/Web/串口仍可用), 后台每
+  // RADIO_RETRY_MS 自动重试, 成功后自动恢复发射能力。
+  g_radioReady = initSi4463();
+  api_setRadioReady(g_radioReady);
+  if (g_radioReady) {
+    printSi4463Info();
+  } else {
+    Serial.println(F("RADIO: offline — WiFi/Web/串口仍可用; 每 10s 自动重试"));
   }
-  printSi4463Info();
 
   // ---- 2. API 初始化 ----
   api_init();
@@ -184,7 +213,11 @@ void setup() {
 // loop
 // ============================================================
 void loop() {
-  Si446x_SERVICE();
+  if (g_radioReady) {
+    Si446x_SERVICE();
+  } else {
+    radioRetryTick();  // 射频离线: 后台重试, 不阻塞其余功能
+  }
   s_wifi.loop();
   s_serial.loop();
   api_loop();

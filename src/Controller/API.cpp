@@ -94,6 +94,7 @@ public:
   void setTransmitter(Transmitter* tx) { m_tx = tx; }
   void setWiFiManager(WiFiManager* wifi) { m_wifi = wifi; }
   void setSweeper(Sweeper* sweeper) { m_sweeper = sweeper; }
+  void setRadioReady(bool ready) { m_radioReady = ready; }
 
   // ---- 查询 ----
   TxConfig getConfig() const { return m_config; }
@@ -117,6 +118,7 @@ private:
   Transmitter* m_tx      = nullptr;
   WiFiManager* m_wifi    = nullptr;
   Sweeper*     m_sweeper = nullptr;
+  bool         m_radioReady = true;  //!< Si4463 可用 (main 初始化失败时置 false, 后台重试)
 
   // 组件
   ConfigStore   m_store;
@@ -265,21 +267,26 @@ void CommandDispatcher::handleSaveConfig(const CmdRequest* req, CmdResponse* res
 // ============================================================
 
 Transmitter::Config CommandDispatcher::makeTxConfig() const {
+  // 枚举已统一 (ProtocolTypes.h), 无需强转。
   Transmitter::Config c;
-  c.encoding = (m_config.encoding == EncodingType::POCSAG)
-                   ? Transmitter::POCSAG : Transmitter::FLEX;
-  c.phase    = (m_config.phase == PhaseType::NORMAL)
-                   ? Transmitter::NORMAL : Transmitter::INVERTED;
+  c.encoding = m_config.encoding;
+  c.phase    = m_config.phase;
   c.baudRate = m_config.baudRate;
-  c.tone     = static_cast<Transmitter::Tone>(m_config.tone);
+  c.tone     = m_config.tone;
   c.address  = m_config.address;
   memcpy(c.message, m_config.message, sizeof(c.message));
-  c.msgType  = (m_config.msgType == MsgType::NUMERIC)
-                   ? Transmitter::NUMERIC : Transmitter::ALPHANUMERIC;
+  c.msgType  = m_config.msgType;
   return c;
 }
 
 void CommandDispatcher::handleTransmit(const CmdRequest* req, CmdResponse* resp) {
+  // 射频离线 (Si4463 初始化失败, 后台重试中) — 拒绝发射
+  if (!m_radioReady) {
+    resp->cmd = CmdID::CMD_TRANSMIT; resp->code = RespCode::ERR_HW;
+    resp->detail = -2;
+    return;
+  }
+
   // 扫描期间禁止单次发射
   if (m_sweeper && m_sweeper->isRunning()) {
     resp->cmd = CmdID::CMD_TRANSMIT; resp->code = RespCode::ERR_BUSY;
@@ -409,6 +416,11 @@ void CommandDispatcher::handleGetLog(const CmdRequest* req, CmdResponse* resp) {
 void CommandDispatcher::handleSweepStart(const CmdRequest* req, CmdResponse* resp) {
   resp->cmd = CmdID::CMD_SWEEP_START;
 
+  if (!m_radioReady) {
+    resp->code = RespCode::ERR_HW;
+    resp->detail = -4;  // radio offline (Si4463 init 失败, 后台重试中)
+    return;
+  }
   if (!m_sweeper) {
     resp->code = RespCode::ERR_HW;
     resp->detail = -1;
@@ -438,21 +450,21 @@ void CommandDispatcher::handleSweepStart(const CmdRequest* req, CmdResponse* res
   cfg.mode      = (m == 0) ? Sweeper::ADDR_SWEEP : Sweeper::FREQ_SWEEP;
   cfg.addrStart = m_config.address;
   cfg.freqStartKHz = m_config.freqKHz;
-  cfg.encoding  = (m_config.encoding == EncodingType::POCSAG)
-                      ? 0 : 1;  // Transmitter::POCSAG/FLEX
-  cfg.phase     = (m_config.phase == PhaseType::NORMAL) ? 0 : 1;
-  cfg.tone      = (int)m_config.tone;
-  cfg.msgType   = (m_config.msgType == MsgType::NUMERIC) ? 0 : 1;
-  cfg.baudRate  = m_config.baudRate;
+  cfg.encoding = m_config.encoding;
+  cfg.phase    = m_config.phase;
+  cfg.tone     = m_config.tone;
+  cfg.msgType  = m_config.msgType;
+  cfg.baudRate = m_config.baudRate;
   cfg.freqKHz   = m_config.freqKHz;
   cfg.address   = m_config.address;
 
-  // 可选覆盖字段 (>=0 才覆盖, -1=未指定)
-  if (req->sweepStart.encoding  >= 0) cfg.encoding  = req->sweepStart.encoding;
+  // 可选覆盖字段 (>=0 才覆盖, -1=未指定); sweepStart 字段为协议线格式
+  // int16_t, 显式转回 ProtocolTypes 枚举 (值已由 handleSweepStart 校验)
+  if (req->sweepStart.encoding  >= 0) cfg.encoding  = static_cast<EncodingType>(req->sweepStart.encoding);
   if (req->sweepStart.baudRate   >= 0) cfg.baudRate  = req->sweepStart.baudRate;
-  if (req->sweepStart.phase      >= 0) cfg.phase     = req->sweepStart.phase;
-  if (req->sweepStart.tone       >= 0) cfg.tone      = req->sweepStart.tone;
-  if (req->sweepStart.msgType    >= 0) cfg.msgType   = req->sweepStart.msgType;
+  if (req->sweepStart.phase      >= 0) cfg.phase     = static_cast<PhaseType>(req->sweepStart.phase);
+  if (req->sweepStart.tone       >= 0) cfg.tone      = static_cast<ToneType>(req->sweepStart.tone);
+  if (req->sweepStart.msgType    >= 0) cfg.msgType   = static_cast<MsgType>(req->sweepStart.msgType);
   if (req->sweepStart.intervalMs >= 0) cfg.intervalMs = (uint16_t)req->sweepStart.intervalMs;
 
   int result = m_sweeper->start(cfg);
@@ -688,6 +700,10 @@ void api_setWiFiManager(WiFiManager* wifi) {
 
 void api_setSweeper(Sweeper* sweeper) {
   g_dispatcher.setSweeper(sweeper);
+}
+
+void api_setRadioReady(bool ready) {
+  g_dispatcher.setRadioReady(ready);
 }
 
 RespCode api_sweepStartSimple(uint8_t mode, uint32_t* startOut) {

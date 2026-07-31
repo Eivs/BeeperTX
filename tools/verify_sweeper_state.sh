@@ -10,6 +10,7 @@ trap 'rm -rf "$DIR"' EXIT
 
 # 复制被测真实源码 + stub 头 + harness
 cp "$REPO"/src/Controller/Sweeper.h "$REPO"/src/Controller/Sweeper.cpp "$DIR/"
+cp "$REPO"/src/Controller/ProtocolTypes.h "$DIR/"
 cp "$REPO"/lib/Pocsag/Pocsag.h "$DIR/"
 cp "$REPO"/tools/sweeper-test/*.h "$DIR/"
 cp "$REPO"/tools/sweeper-test/harness.cpp "$DIR/"

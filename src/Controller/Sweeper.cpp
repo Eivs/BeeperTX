@@ -155,7 +155,7 @@ void Sweeper::sweepStep() {
 // 追码: 批量发射
 // ============================================================
 void Sweeper::txAddrBatch() {
-  if (m_cfg.encoding == Transmitter::POCSAG) {
+  if (m_cfg.encoding == EncodingType::POCSAG) {
     // ---- POCSAG 批量 (POCSAG_BATCH_SIZE 地址/批, 共享一个前导码; 8 地址/组) ----
     // 消息 = 地址数字串, 固定 NUMERIC 编码 (规格 §1.2 纯数字消息)。
     // 批量仅支持 ≤5 位数字 (1 CW) 且批内帧号不冲突; 否则降级逐地址标准发射。
@@ -174,7 +174,7 @@ void Sweeper::txAddrBatch() {
 
     // 拆分子批次: 每个子批次独立编码+发射, 中间检查 STOP
     PocsagEncoder& encoder = m_batchEncoder;
-    bool invert = (m_cfg.phase == Transmitter::NORMAL);
+    bool invert = (m_cfg.phase == PhaseType::NORMAL);
 
     int sent = 0;
     while (sent < totalCount) {
@@ -184,7 +184,8 @@ void Sweeper::txAddrBatch() {
       if (sent + sub > totalCount) sub = totalCount - sent;
 
       int addrEncoded = 0;
-      int words = encoder.encodeBatch(addrs + sent, sub, m_cfg.tone,
+      int words = encoder.encodeBatch(addrs + sent, sub,
+                                      static_cast<int>(m_cfg.tone),  // 库边界: Pocsag 用 int 功能码
                                       MODE_NUMERIC, invert, &addrEncoded);
 
       if (words > 0 && addrEncoded == sub) {
@@ -208,13 +209,12 @@ void Sweeper::txAddrBatch() {
           if (m_mode == IDLE) return;  // STOP 响应
 
           Transmitter::Config cfg;
-          cfg.encoding = Transmitter::POCSAG;
-          cfg.phase    = (Transmitter::Phase)m_cfg.phase;
-          cfg.tone     = (Transmitter::Tone)m_cfg.tone;
+          cfg.encoding = EncodingType::POCSAG;
+          cfg.phase    = m_cfg.phase;
+          cfg.tone     = m_cfg.tone;
           cfg.baudRate = m_cfg.baudRate;
           cfg.address  = addrs[sent + i];
-          cfg.msgType  = (m_cfg.msgType == Transmitter::NUMERIC)
-                             ? Transmitter::NUMERIC : Transmitter::ALPHANUMERIC;
+          cfg.msgType  = m_cfg.msgType;
           snprintf(cfg.message, sizeof(cfg.message), "%lu",
                    (unsigned long)addrs[sent + i]);
 
@@ -252,7 +252,7 @@ void Sweeper::txAddrBatch() {
     snprintf(msg, sizeof(msg), "%lu", (unsigned long)addr);
 
     FlexEncoder encoder;
-    FlexEncoder::MsgType mt = (m_cfg.msgType == Transmitter::NUMERIC)
+    FlexEncoder::MsgType mt = (m_cfg.msgType == MsgType::NUMERIC)
                                   ? FlexEncoder::NUMERIC : FlexEncoder::ALPHA;
     size_t len = encoder.encode(addr, msg, mt);
 
@@ -263,7 +263,7 @@ void Sweeper::txAddrBatch() {
       api_log(logLine);
 
       Serial.print('.');
-      bool invert = (m_cfg.phase == Transmitter::NORMAL);
+      bool invert = (m_cfg.phase == PhaseType::NORMAL);
       m_tx->sendFlexRaw(encoder.getData(), len, m_cfg.baudRate, invert);
       Serial.println(F(" OK"));
       m_done++;
@@ -296,12 +296,12 @@ void Sweeper::txFreqOnce() {
 
   // 构建 Config — 消息为频率值 (kHz 数值, 不含小数点)
   Transmitter::Config cfg;
-  cfg.encoding = static_cast<Transmitter::Encoding>(m_cfg.encoding);
-  cfg.phase    = static_cast<Transmitter::Phase>(m_cfg.phase);
-  cfg.tone     = static_cast<Transmitter::Tone>(m_cfg.tone);
+  cfg.encoding = m_cfg.encoding;
+  cfg.phase    = m_cfg.phase;
+  cfg.tone     = m_cfg.tone;
   cfg.baudRate = m_cfg.baudRate;
   cfg.address  = m_cfg.address;
-  cfg.msgType  = static_cast<Transmitter::MsgType>(m_cfg.msgType);
+  cfg.msgType  = m_cfg.msgType;
 
   // 消息 = 频率值 (如 "152675")
   char freqStr[16];

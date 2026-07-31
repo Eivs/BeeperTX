@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "Pocsag.h"
+#include "ProtocolTypes.h"
 
 // 前向声明
 class Transmitter;
@@ -52,12 +53,12 @@ public:
     uint32_t freqStartKHz;
     uint32_t freqStepKHz = DEFAULT_FREQ_STEP_KHZ;
     uint32_t freqMaxKHz  = DEFAULT_FREQ_MAX_KHZ;
-    // 通用发射参数
-    int      encoding;        // Transmitter::POCSAG / FLEX
-    int      phase;           // Transmitter::NORMAL / INVERTED
-    int      tone;            // Transmitter::TONE_A..D
-    int      msgType;         // Transmitter::NUMERIC / ALPHANUMERIC
-    int      baudRate;
+    // 通用发射参数 (统一 ProtocolTypes.h 枚举, 与 TxConfig/Transmitter 同源)
+    EncodingType encoding = EncodingType::POCSAG; //!< POCSAG / FLEX
+    PhaseType    phase    = PhaseType::NORMAL;    //!< NORMAL / INVERTED
+    ToneType     tone     = ToneType::TONE_A;     //!< TONE_A..D
+    MsgType      msgType  = MsgType::ALPHANUMERIC; //!< NUMERIC / ALPHANUMERIC
+    int          baudRate;
     uint32_t freqKHz;         // 发射频率 (追码时用)
     uint32_t address;         // 地址 (追频时用, 固定消息内容)
     uint16_t intervalMs = DEFAULT_INTERVAL_MS;  // 批次/频率点间隔 (ms)

@@ -170,21 +170,22 @@ void Transmitter::sendPocsag(const Config& cfg) {
   PocsagEncoder& encoder = m_pocsagEncoder;
   // Si4463 的 FSK MARK/SPACE 极性与寻呼机解调器预期相反,
   // 故 NORMAL = 基带反转以补偿硬件极性。
-  bool invert = (cfg.phase == NORMAL);
+  bool invert = (cfg.phase == PhaseType::NORMAL);
 
   // UTF-8 → GB2312 转换 (直接引用 String 内部 buffer, 避免 getBytes 拷贝)
   String gbStr;  // 保持生命周期覆盖 data 使用期
   const uint8_t* data = (const uint8_t*)cfg.message;
   size_t dataLen = strlen(cfg.message);
 
-  if (cfg.msgType == ALPHANUMERIC) {
+  if (cfg.msgType == MsgType::ALPHANUMERIC) {
     gbStr = GB.get(String(cfg.message));
     dataLen = gbStr.length();
     data = (const uint8_t*)gbStr.c_str();   // 指向 String 内部 buffer, 无拷贝
   }
 
-  encoder.encode(cfg.address, cfg.tone, data, dataLen,
-                 (DisplayMode)cfg.msgType, invert);
+  encoder.encode(cfg.address, static_cast<int>(cfg.tone),  // 库边界: Pocsag 用 int 功能码
+                 data, dataLen,
+                 static_cast<DisplayMode>(cfg.msgType), invert);
 
   const unsigned long* bb = encoder.getBaseband();
   int bandLen = encoder.getBasebandLength();
@@ -192,9 +193,9 @@ void Transmitter::sendPocsag(const Config& cfg) {
   int bt   = bitTimeUs(cfg.baudRate);
   int pre  = preambleBits(cfg.baudRate);
 
-  const char toneLetter = "ABCD"[cfg.tone & 3];
-  const char* modeName = (cfg.msgType == NUMERIC) ? "NUM" : "ALPHA";
-  const char* phaseName = (cfg.phase == INVERTED) ? "INV" : "NRM";
+  const char toneLetter = "ABCD"[static_cast<int>(cfg.tone) & 3];
+  const char* modeName = (cfg.msgType == MsgType::NUMERIC) ? "NUM" : "ALPHA";
+  const char* phaseName = (cfg.phase == PhaseType::INVERTED) ? "INV" : "NRM";
   Serial.printf("TX[%d][POCSAG] addr=%llu tone=%c baud=%d %s %s \"%s\"\n",
                 m_txCount, cfg.address, toneLetter, cfg.baudRate,
                 modeName, phaseName, cfg.message);
@@ -214,11 +215,11 @@ void Transmitter::sendPocsag(const Config& cfg) {
 void Transmitter::sendFlex(const Config& cfg) {
   FlexEncoder encoder;
   // Si4463 FSK 极性补偿: NORMAL = 反转基带
-  bool invert = (cfg.phase == NORMAL);
+  bool invert = (cfg.phase == PhaseType::NORMAL);
   int bt = bitTimeUs(cfg.baudRate);
   size_t len;
 
-  bool isNum = (cfg.msgType == NUMERIC);
+  bool isNum = (cfg.msgType == MsgType::NUMERIC);
   if (isNum) {
     len = encoder.encode(cfg.address, cfg.message, FlexEncoder::NUMERIC);
   } else {
@@ -259,7 +260,7 @@ void Transmitter::sendFlex(const Config& cfg) {
   }
 
   const char* modeName = isNum ? "NUM" : "ALPHA(CN)";
-  const char* phaseName = (cfg.phase == INVERTED) ? "INV" : "NRM";
+  const char* phaseName = (cfg.phase == PhaseType::INVERTED) ? "INV" : "NRM";
   Serial.printf("TX[%d][FLEX] addr=%llu baud=%d %s %s \"%s\"\n",
                 m_txCount, cfg.address, cfg.baudRate,
                 modeName, phaseName, cfg.message);

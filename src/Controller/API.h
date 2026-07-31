@@ -35,36 +35,13 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <cstring>
+#include "ProtocolTypes.h"
 
 // ============================================================
-// 公共枚举 (与 Transmitter 对齐)
+// 公共枚举 — 统一来自 ProtocolTypes.h (EncodingType/PhaseType/
+// ToneType/MsgType), 与 Transmitter::Config / Sweeper::Config 同源,
+// 消除三套枚举互相强转的问题。
 // ============================================================
-
-/** 编码协议 */
-enum class EncodingType : uint8_t {
-  POCSAG = 0,
-  FLEX   = 1
-};
-
-/** 相位 (FSK 极性) */
-enum class PhaseType : uint8_t {
-  NORMAL   = 0,
-  INVERTED = 1
-};
-
-/** POCSAG 铃音 / 功能码 */
-enum class ToneType : uint8_t {
-  TONE_A = 0,
-  TONE_B = 1,
-  TONE_C = 2,
-  TONE_D = 3
-};
-
-/** 消息类型 */
-enum class MsgType : uint8_t {
-  NUMERIC      = 0,
-  ALPHANUMERIC = 1
-};
 
 // ============================================================
 // 命令 ID 枚举
@@ -290,6 +267,12 @@ void api_setWiFiManager(WiFiManager* wifi);
  * @brief 注入 Sweeper 指针 (由 main.cpp 在创建 sweeper 后调用)。
  */
 void api_setSweeper(Sweeper* sweeper);
+
+/**
+ * @brief 设置射频 (Si4463) 可用状态 — main.cpp 初始化失败时置 false,
+ *        后台重试成功后置 true。离线期间 TX/SWEEP 命令返回 ERR_HW。
+ */
+void api_setRadioReady(bool ready);
 
 /**
  * @brief Web/串口快捷入口 (规格 §8.2): 从当前 TxConfig 填充扫描配置并启动。

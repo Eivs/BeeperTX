@@ -5,22 +5,20 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include "ProtocolTypes.h"  // 真实枚举源 (与生产同源, 验证脚本复制)
 
 class Transmitter {
 public:
-  enum Encoding { POCSAG = 0, FLEX = 1 };
-  enum Phase { NORMAL = 0, INVERTED = 1 };
-  enum Tone { TONE_A = 0, TONE_B = 1, TONE_C = 2, TONE_D = 3 };
-  enum MsgType { NUMERIC = 0, ALPHANUMERIC = 1 };
+  // 协议枚举统一来自 ProtocolTypes.h (与生产 Transmitter.h 一致)
 
   struct Config {
-    Encoding encoding = POCSAG;
-    Phase phase = NORMAL;
+    EncodingType encoding = EncodingType::POCSAG;
+    PhaseType phase = PhaseType::NORMAL;
     int baudRate = 1200;
-    Tone tone = TONE_A;
+    ToneType tone = ToneType::TONE_A;
     uint64_t address = 1000;
     char message[256] = "";
-    MsgType msgType = ALPHANUMERIC;
+    MsgType msgType = MsgType::ALPHANUMERIC;
   };
 
   void send(const Config& cfg);

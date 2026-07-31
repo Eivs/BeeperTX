@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "ProtocolTypes.h"
 #include "Pocsag.h"
 #include "FlexEncoder.h"
 #include <freertos/FreeRTOS.h>
@@ -20,7 +21,7 @@
  * @code
  *   Transmitter tx(PIN_TX_DATA);
  *   Transmitter::Config cfg;
- *   cfg.encoding = Transmitter::POCSAG;
+ *   cfg.encoding = EncodingType::POCSAG;
  *   cfg.baudRate = 1200;
  *   cfg.address  = 1000;
  *   cfg.message  = "你好 FLEX";
@@ -29,31 +30,8 @@
  */
 class Transmitter {
 public:
-  /** 编码方式 */
-  enum Encoding {
-    POCSAG = 0,  //!< POCSAG 协议 (支持中文 GB2312)
-    FLEX   = 1   //!< FLEX 协议 (ASCII only)
-  };
-
-  /** 相位 (FSK 极性) */
-  enum Phase {
-    NORMAL   = 0, //!< 正相
-    INVERTED = 1  //!< 反相
-  };
-
-  /** 铃音 (POCSAG function bits) */
-  enum Tone {
-    TONE_A = 0,
-    TONE_B = 1,
-    TONE_C = 2,
-    TONE_D = 3
-  };
-
-  /** 消息类型 */
-  enum MsgType {
-    NUMERIC      = 0, //!< 数字 (POCSAG: 4-bit BCD)
-    ALPHANUMERIC = 1  //!< 汉字/字母 (POCSAG: GB2312, FLEX: ASCII)
-  };
+  // 协议配置枚举统一来自 ProtocolTypes.h (EncodingType/PhaseType/
+  // ToneType/MsgType), 与 TxConfig/Sweeper::Config 同源。
 
   /**
    * @brief 发射配置 (仅数据容器, 不含逻辑)
@@ -61,13 +39,13 @@ public:
    * main.cpp 只填充此结构体, 然后调用 send().
    */
   struct Config {
-    Encoding   encoding   = POCSAG;          //!< POCSAG / FLEX
-    Phase      phase      = NORMAL;           //!< 正相 / 反相 (根据射频配置和寻呼机适配情况选择)
-    int        baudRate   = 1200;             //!< 码率: 512/1200/1600/2400/3200/6400
-    Tone       tone       = TONE_A;           //!< 铃音
-    uint64_t   address    = 1000;             //!< 寻呼机地址
-    char       message[256] = "";             //!< 消息内容 (UTF-8, 最大 255 字节)
-    MsgType    msgType    = ALPHANUMERIC;//!< 数字 / 汉字
+    EncodingType encoding   = EncodingType::POCSAG; //!< POCSAG / FLEX
+    PhaseType    phase      = PhaseType::NORMAL;    //!< 正相 / 反相 (根据射频配置和寻呼机适配情况选择)
+    int          baudRate   = 1200;                 //!< 码率: 512/1200/1600/2400/3200/6400
+    ToneType     tone       = ToneType::TONE_A;     //!< 铃音
+    uint64_t     address    = 1000;                 //!< 寻呼机地址
+    char         message[256] = "";                 //!< 消息内容 (UTF-8, 最大 255 字节)
+    MsgType      msgType    = MsgType::ALPHANUMERIC; //!< 数字 / 汉字
   };
 
   /**
