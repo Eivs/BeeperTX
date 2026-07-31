@@ -221,9 +221,11 @@ struct CmdResponse {
     struct {
       bool     running;
       uint8_t  mode;       // 0=idle, 1=追地址, 2=追频率
-      uint32_t current;    // 当前地址/频率
+      uint32_t current;    // 当前地址/频率 (下一批起点)
       uint32_t total;      // 总步数
       uint32_t done;       // 已完成步数
+      uint32_t batchStart; // 当前批次起始 (追码批量; 否则 = current)
+      uint32_t batchEnd;   // 当前批次结束 (含; 否则 = current)
     } sweepStatus;
   };
 

@@ -543,8 +543,15 @@ void SerialConsole::cmdSweepStatus() {
   if (resp.sweepStatus.running) {
     m_stream.print(resp.sweepStatus.mode == 1 ? "running mode=addr" :
                    resp.sweepStatus.mode == 2 ? "running mode=freq" : "running");
-    m_stream.print(F(" current="));
-    m_stream.print(resp.sweepStatus.current);
+    if (resp.sweepStatus.mode == 1 && resp.sweepStatus.batchStart != resp.sweepStatus.batchEnd) {
+      m_stream.print(F(" batch="));
+      m_stream.print(resp.sweepStatus.batchStart);
+      m_stream.print('-');
+      m_stream.print(resp.sweepStatus.batchEnd);
+    } else {
+      m_stream.print(F(" current="));
+      m_stream.print(resp.sweepStatus.current);
+    }
   } else {
     m_stream.print(F("idle"));
   }

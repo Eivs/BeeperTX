@@ -77,6 +77,14 @@ Sweeper::Status Sweeper::getStatus() const {
   s.current = m_current;
   s.total   = m_total;
   s.done    = m_done;
+  // 当前批次区间 (UI 显示用): 批量进行中显示实际批; 否则单地址 = current
+  if (m_mode == ADDR_SWEEP && m_batchSize > 0) {
+    s.batchStart = m_batchBase;
+    s.batchEnd   = m_batchBase + m_batchSize - 1;
+  } else {
+    s.batchStart = m_current;
+    s.batchEnd   = m_current;
+  }
   return s;
 }
 

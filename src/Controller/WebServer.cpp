@@ -522,15 +522,18 @@ void WebServer::onSweepStatus(AsyncWebServerRequest* req) {
   api_dispatch(&r, &resp);
 
   if (resp.code == RespCode::OK) {
-    char buf[256];
+    char buf[320];
     snprintf(buf, sizeof(buf),
              "{\"code\":0,\"running\":%s,\"mode\":%d,"
-             "\"current\":%lu,\"total\":%lu,\"done\":%lu}",
+             "\"current\":%lu,\"total\":%lu,\"done\":%lu,"
+             "\"batchStart\":%lu,\"batchEnd\":%lu}",
              resp.sweepStatus.running ? "true" : "false",
              resp.sweepStatus.mode,
              (unsigned long)resp.sweepStatus.current,
              (unsigned long)resp.sweepStatus.total,
-             (unsigned long)resp.sweepStatus.done);
+             (unsigned long)resp.sweepStatus.done,
+             (unsigned long)resp.sweepStatus.batchStart,
+             (unsigned long)resp.sweepStatus.batchEnd);
     req->send(200, "application/json", buf);
   } else {
     req->send(500, "application/json",

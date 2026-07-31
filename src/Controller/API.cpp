@@ -128,6 +128,7 @@ private:
   // 状态
   TxConfig     m_config;
   DeviceStatus m_status;
+  bool         m_statusCached = false;  //!< partId/romId/chipRev 已缓存 (静态信息)
   uint32_t     m_txCount = 0;
 
   // ---- Handlers ----
@@ -169,16 +170,34 @@ void CommandDispatcher::handleGetStatus(const CmdRequest* req, CmdResponse* resp
   resp->cmd  = CmdID::CMD_GET_STATUS;
   resp->code = RespCode::OK;
 
-  si446x_info_t info;
-  Si446x_getInfo(&info);
+  // 静态芯片信息 (partId/romId/chipRev) 只在首次查询 (Radio 就绪后), 之后缓存。
+  // 避免 webUI 每 3s 轮询触发 5 次 SPI 事务 (每次 doAPI 在 Si4463 忙时可
+  // 忙等 400ms 且持跨核递归锁) → webUI 高延时 + 阻塞 txTask 的 enterTx/exitTx。
+  if (!m_statusCached) {
+    si446x_info_t info;
+    Si446x_getInfo(&info);
+    if (info.part != 0) {
+      m_status.partId       = info.part;
+      m_status.romId        = info.romId;
+      m_status.chipRev      = info.chipRev;
+      m_statusCached        = true;
+    }
+  }
 
-  m_status.partId       = info.part;
-  m_status.romId        = info.romId;
-  m_status.chipRev      = info.chipRev;
-  m_status.state        = (uint8_t)Si446x_getState();
-  m_status.freqKHz      = Si446x_getFrequencyKHz();
-  m_status.txPower      = Si446x_getTxPower();
-  m_status.rssiDbm      = Si446x_getRSSI();
+  // 发射期间 (txTask 持锁/位敲击): 跳过实时 SPI 查询, 用缓存状态。
+  // Si4463 处于 Direct TX 时不响应多数命令, doAPI 会忙等到 CTS 超时
+  // (每个查询最多 400ms), 持跨核锁阻塞 txTask → 发射停滞 + WDT 复位
+  // (用户实测"追码自动停止"的根因)。
+  const bool txBusy = m_tx && m_tx->isBusy();
+  if (!txBusy) {
+    m_status.state   = (uint8_t)Si446x_getState();
+    m_status.freqKHz = Si446x_getFrequencyKHz();
+    m_status.txPower = Si446x_getTxPower();
+    m_status.rssiDbm = Si446x_getRSSI();
+  } else {
+    m_status.state   = SI446X_STATE_TX;  // 正在发射
+    // freqKHz/txPower/rssi 保持上次缓存值 (发射中 RSSI 无意义)
+  }
   m_status.temperatureC = 0;          // Si4463 无温度传感器, 预留
   m_status.uptimeS      = millis() / 1000;
   m_status.txCount      = m_txCount;
@@ -510,11 +529,13 @@ void CommandDispatcher::handleSweepStatus(const CmdRequest* req, CmdResponse* re
 
   if (m_sweeper) {
     Sweeper::Status st = m_sweeper->getStatus();
-    resp->sweepStatus.running = st.running;
-    resp->sweepStatus.mode    = st.mode;
-    resp->sweepStatus.current = st.current;
-    resp->sweepStatus.total   = st.total;
-    resp->sweepStatus.done    = st.done;
+    resp->sweepStatus.running     = st.running;
+    resp->sweepStatus.mode        = st.mode;
+    resp->sweepStatus.current     = st.current;
+    resp->sweepStatus.total       = st.total;
+    resp->sweepStatus.done        = st.done;
+    resp->sweepStatus.batchStart  = st.batchStart;
+    resp->sweepStatus.batchEnd    = st.batchEnd;
   } else {
     memset(&resp->sweepStatus, 0, sizeof(resp->sweepStatus));
   }

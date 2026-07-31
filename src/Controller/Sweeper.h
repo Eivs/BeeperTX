@@ -68,9 +68,11 @@ public:
   struct Status {
     bool     running = false;
     uint8_t  mode    = IDLE;   // Mode
-    uint32_t current = 0;      // 当前地址/频率
+    uint32_t current = 0;      // 当前地址/频率 (下一批起点)
     uint32_t total   = 0;      // 总步数
     uint32_t done    = 0;      // 已完成步数
+    uint32_t batchStart = 0;   // 当前批次起始 (仅追码 POCSAG 批量; FLEX 单地址)
+    uint32_t batchEnd   = 0;   // 当前批次结束 (含)
   };
 
   Sweeper();

@@ -53,6 +53,17 @@ function check(name, cond) { if (cond) { pass++; console.log('  PASS: ' + name);
   check('运行态 Addr: 进度 done/total', document.getElementById('sweep-count-text').textContent === '200/9999000');
   check('运行态 Addr: 状态行显示', document.getElementById('sweep-status-line').style.display !== 'none');
 
+  // 场景 2b: 运行态 Addr + 批次区间 (batchStart/batchEnd) → 显示区间
+  window.API.sweepStatus = async () => ({ code: 0, running: true, mode: 1, current: 1200, total: 9999000, done: 200, batchStart: 990, batchEnd: 1005 });
+  await ConfigPanel.updateSweepUI();
+  check('运行态 Addr: 批次区间显示', document.getElementById('sweep-current-text').textContent === 'addr=990-1005');
+  check('运行态 Addr: 区间模式进度不变', document.getElementById('sweep-count-text').textContent === '200/9999000');
+
+  // 场景 2c: 运行态 Addr + 批次区间缺失/单地址 (兼容旧协议) → 回退 current
+  window.API.sweepStatus = async () => ({ code: 0, running: true, mode: 1, current: 1200, total: 9999000, done: 200, batchStart: 1200, batchEnd: 1200 });
+  await ConfigPanel.updateSweepUI();
+  check('运行态 Addr: 单地址批次显示', document.getElementById('sweep-current-text').textContent === 'addr=1200');
+
   // 场景 3: 运行态 Freq (mode=2) → mode 'Freq', 进度 done/total
   window.API.sweepStatus = async () => ({ code: 0, running: true, mode: 2, current: 152675, total: 1000, done: 42 });
   await ConfigPanel.updateSweepUI();

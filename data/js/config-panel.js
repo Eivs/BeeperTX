@@ -337,7 +337,14 @@
       }
       if (curText) {
         if (s.mode === 1) {
-          curText.textContent = 'addr=' + s.current;
+          // 追码: 显示当前批次区间 (如 990-1005), 避免"下一批起点"误导
+          const bStart = Number(s.batchStart);
+          const bEnd   = Number(s.batchEnd);
+          if (isFinite(bStart) && isFinite(bEnd) && bEnd >= bStart) {
+            curText.textContent = 'addr=' + bStart + (bEnd > bStart ? '-' + bEnd : '');
+          } else {
+            curText.textContent = 'addr=' + s.current;
+          }
         } else {
           let freqMHz = (s.current / 1000).toFixed(3);
           curText.textContent = freqMHz + ' MHz';
