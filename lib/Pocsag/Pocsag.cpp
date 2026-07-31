@@ -361,55 +361,87 @@ void PocsagEncoder::genSignal(unsigned long addr, int function,
 }
 
 // ============================================================================
-// 批量编码 — 多地址共用一个前导码
+// 批量编码 — 多个地址共用一个前导码
+//
+// 帧结构 (规格 §4.2 + §13.1): 每组 = [SYNC] + 8 帧 × 2 码字。
+//   地址码字放在其 (addr & 0x07) 对应的帧槽 (POCSAG 标准帧号), 消息码字紧跟其后。
+//   连续递增的地址自然覆盖全部 8 帧, 每组最多 8 地址。
+//   组尾 (地址不足 8 的组) 用 IDLE 填充; 整批结束后补 16 个 IDLE。
+//
+// 消息约束: 批量路径仅支持 MODE_NUMERIC 且每条消息 ≤1 个消息码字 (≤5 位数字)。
+//   - ALPHANUMERIC: 纯数字串经 deCodeAlpha 会插入 \x0F/EOT 控制字符, 恒 ≥2 CW, 拒绝。
+//   - 数字 >5 位: 需 2 CW, 拒绝。
+//   被拒绝时返回 0, 由调用方降级逐地址发送 (规格 §13.1)。
 // ============================================================================
 
 int PocsagEncoder::encodeBatch(const uint32_t *addresses, int addrCount,
-                                int function, DisplayMode mode, bool invert) {
+                                int function, DisplayMode mode, bool invert,
+                                int *addrEncoded) {
   m_bandLength = 0;
   memset(m_baseband, 0, sizeof(m_baseband));
+  if (addrEncoded) *addrEncoded = 0;
 
   if (!addresses || addrCount <= 0) return 0;
+
+  // 批量路径仅支持 NUMERIC 数字消息 (消息 = 地址十进制串)
+  if (mode != MODE_NUMERIC) return 0;
+
+  // ---- 0. 预检: 每条消息 ≤5 位数字 (1 CW); 组内帧号唯一 ----
+  for (int i = 0; i < addrCount; i++) {
+    if (addresses[i] > 99999) return 0;   // 6 位及以上需 2 CW
+  }
+  for (int g = 0; g < addrCount; g += 8) {
+    bool frameSeen[8] = {false};
+    int groupCount = addrCount - g;
+    if (groupCount > 8) groupCount = 8;
+    for (int i = 0; i < groupCount; i++) {
+      uint8_t frame = addresses[g + i] & 0x07;
+      if (frameSeen[frame]) return 0;     // 组内两地址同帧, 无法批量
+      frameSeen[frame] = true;
+    }
+  }
 
   // ---- 1. 共享前导码 ----
   genPreamble();
   int bandPtr = 18;
 
-  // ---- 2. 逐地址生成批次 (SYNC + 16 帧) ----
-  for (int i = 0; i < addrCount && bandPtr < MAX_BASEBAND - 20; i++) {
-    // 2a. 编码消息 = 地址十进制字符串
-    char addrStr[16];
-    snprintf(addrStr, sizeof(addrStr), "%lu", (unsigned long)addresses[i]);
-    size_t msgLen = strlen(addrStr);
+  // ---- 2. 按组拼装 (每组 [SYNC] + 8 帧, 8 地址共享一组) ----
+  int encoded = 0;
+  for (int i = 0; i < addrCount && bandPtr < MAX_BASEBAND - 18; i += 8) {
+    int groupCount = addrCount - i;
+    if (groupCount > 8) groupCount = 8;
 
-    memset(m_msgCode, 0, sizeof(m_msgCode));
-    if (mode == MODE_NUMERIC) {
-      deCodeNumeric((const uint8_t *)addrStr, msgLen);
-    } else {
-      deCodeAlpha((const uint8_t *)addrStr, msgLen);
-    }
-
-    // 2b. 生成地址码字
-    unsigned long addrWord = genAddrCode(addresses[i], function);
-    uint8_t frameNum = addresses[i] & 0x07;
-    uint8_t addrSlot = frameNum * 2;
-
-    // 2c. 写入 SYNC + 16 帧
     m_baseband[bandPtr++] = POCSAG_SYNC;
 
-    int msgIdx = 0;
-    bool addrSent = false;
+    // 先为组内每个地址生成消息码字, 按帧号存放
+    unsigned long addrWords[8] = {0};
+    unsigned long msgWords[8]  = {0};
+    bool frameUsed[8] = {false};
+    for (int g = 0; g < groupCount; g++) {
+      uint32_t addr = addresses[i + g];
+      uint8_t frame = addr & 0x07;
+      char addrStr[16];
+      snprintf(addrStr, sizeof(addrStr), "%lu", (unsigned long)addr);
+
+      // 复用 deCodeNumeric 的 BCD + SPACE 填充打包, 取第 1 个码字
+      deCodeNumeric((const uint8_t *)addrStr, strlen(addrStr));
+      msgWords[frame] = m_msgCode[0];
+      addrWords[frame] = genAddrCode(addr, function);
+      frameUsed[frame] = true;
+    }
+
+    // 按帧槽写入: 帧 f 槽 0 = 地址码字, 槽 1 = 消息码字
     for (int slot = 0; slot < 16 && bandPtr < MAX_BASEBAND; slot++) {
-      if (slot == addrSlot && !addrSent) {
-        m_baseband[bandPtr++] = addrWord;
-        addrSent = true;
-      } else if (addrSent && msgIdx < MAX_CODEMORDS &&
-                 m_msgCode[msgIdx] != POCSAG_IDLE && m_msgCode[msgIdx] != 0) {
-        m_baseband[bandPtr++] = m_msgCode[msgIdx++];
+      int frame = slot / 2;
+      if (frameUsed[frame]) {
+        m_baseband[bandPtr++] =
+            (slot & 1) ? msgWords[frame] : addrWords[frame];
       } else {
         m_baseband[bandPtr++] = POCSAG_IDLE;
       }
     }
+
+    encoded += groupCount;
   }
 
   // ---- 3. 尾部填充 16 个空闲码字 ----
@@ -432,5 +464,6 @@ int PocsagEncoder::encodeBatch(const uint32_t *addresses, int addrCount,
   }
 
   m_bandLength = bandPtr;
+  if (addrEncoded) *addrEncoded = encoded;
   return bandPtr;
 }

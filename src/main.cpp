@@ -182,6 +182,7 @@ void loop() {
   s_wifi.loop();
   s_serial.loop();
   api_loop();
+  s_sweeper.loop();  // Sweeper 非阻塞调度 (规格 §8.4)
 
   // Web 服务器由 AsyncWebServer 后台处理, 无需显式 loop()
 }

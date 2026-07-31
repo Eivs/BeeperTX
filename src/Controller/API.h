@@ -168,9 +168,15 @@ struct CmdRequest {
     // CMD_GET_LOG:          读取最近 N 条日志
     uint8_t logCount;
 
-    // CMD_SWEEP_START:      启动追码/追频
+    // CMD_SWEEP_START:      启动追码/追频 (mode 必填, 其余覆盖字段 -1=未指定)
     struct {
-      uint8_t mode;   // 0=追地址码, 1=追频率
+      uint8_t mode;          // 0=追地址码, 1=追频率
+      int16_t encoding;      // -1=未指定(用当前), 0=POCSAG, 1=FLEX
+      int16_t baudRate;      // -1=未指定(用当前)
+      int16_t phase;         // -1=未指定(用当前), 0=NORMAL, 1=INVERTED
+      int16_t tone;          // -1=未指定(用当前), 0-3
+      int16_t msgType;       // -1=未指定(用当前), 0=NUMERIC, 1=ALPHANUMERIC
+      int32_t intervalMs;    // -1=未指定(用默认 500)
     } sweepStart;
 
     // CMD_PING / CMD_GET_STATUS / CMD_GET_CONFIG /
@@ -211,12 +217,13 @@ struct CmdResponse {
     // CMD_SCAN_WIFI / CMD_SET_WIFI
     WiFiStatus wifi;
 
-    // CMD_SWEEP_STATUS
+    // CMD_SWEEP_STATUS (规格 §3.1/§9.4)
     struct {
       bool     running;
       uint8_t  mode;       // 0=idle, 1=追地址, 2=追频率
       uint32_t current;    // 当前地址/频率
-      uint32_t totalSent;  // 累计发送次数
+      uint32_t total;      // 总步数
+      uint32_t done;       // 已完成步数
     } sweepStatus;
   };
 
@@ -260,6 +267,14 @@ void api_setWiFiManager(WiFiManager* wifi);
  * @brief 注入 Sweeper 指针 (由 main.cpp 在创建 sweeper 后调用)。
  */
 void api_setSweeper(Sweeper* sweeper);
+
+/**
+ * @brief Web/串口快捷入口 (规格 §8.2): 从当前 TxConfig 填充扫描配置并启动。
+ * @param mode     0=追码, 1=追频
+ * @param startOut 可选: 实际起始值 (addrStart / freqStartKHz)
+ * @return RespCode (OK=成功, ERR_BUSY/ERR_PARAM/ERR_HW=失败)
+ */
+RespCode api_sweepStartSimple(uint8_t mode, uint32_t* startOut);
 
 /**
  * @brief 获取当前发射配置的快照 (用于 Web/串口日志)。

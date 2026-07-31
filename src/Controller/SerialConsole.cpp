@@ -119,8 +119,10 @@ void SerialConsole::printHelp() {
     "     msgType=num|alpha  Numeric / Alphanumeric\n"
     "     msg=<text>         Message content (UTF-8)\n"
     "  TX [msg=<text>]       Transmit once (optional msg override)\n"
-    "  SWEEP addr|freq        Start address/frequency sweep\n"
-    "  STOP                   Stop sweep\n"
+    "  SWEEP [START] addr|freq [encoding=pocsag|flex] [baud=<rate>]\n"
+    "       [phase=norm|inv] [tone=a..d] [msgType=num|alpha] [interval=<ms>]\n"
+    "  SWEEP [START] stop|status  Stop sweep / show progress\n"
+    "  STOP                   Alias for SWEEP stop\n"
     "  WIFI                  Show WiFi status\n"
     "  WIFI ssid=X pass=Y    Set WiFi credentials (triggers reboot)\n"
     "  SCAN                  Scan nearby WiFi networks\n"
@@ -363,14 +365,44 @@ void SerialConsole::cmdScan() {
 }
 
 void SerialConsole::cmdSweep(const char* args) {
-  // 解析 mode: "addr" 或 "freq"
-  uint8_t mode = 0xFF;
-  if (args) {
+  // 语法: SWEEP [START] addr|freq [encoding=..] [baud=..] [phase=..] [tone=..]
+  //                  [msgType=..] [interval=..]
+  //        SWEEP [START] stop|status
+  // "START" 前缀可选, 兼容两种写法 (规格 §8.3 附录 A 与 help)。
+  if (!args) {
+    m_stream.println(F("ERR SWEEP: need 'addr', 'freq', 'stop' or 'status'. See HELP."));
+    return;
+  }
+  while (*args == ' ') args++;
+
+  // ---- 跳过可选 "START" 前缀 ----
+  if (strncasecmp(args, "start", 5) == 0 &&
+      (args[5] == ' ' || args[5] == '\0')) {
+    args += 5;
     while (*args == ' ') args++;
-    if (strcasecmp(args, "addr") == 0)       mode = 0;
-    else if (strcasecmp(args, "freq") == 0)  mode = 1;
   }
 
+  // ---- STOP / STATUS ----
+  if (strcasecmp(args, "stop") == 0) {
+    cmdStop();
+    return;
+  }
+  if (strcasecmp(args, "status") == 0) {
+    cmdSweepStatus();
+    return;
+  }
+
+  // ---- START <mode> [params] ----
+  char buf[128];
+  strncpy(buf, args, sizeof(buf) - 1);
+  buf[sizeof(buf) - 1] = '\0';
+
+  char* tok = strtok(buf, " ");
+  uint8_t mode = 0xFF;
+  if (tok) {
+    if (strcasecmp(tok, "addr") == 0)      mode = 0;
+    else if (strcasecmp(tok, "freq") == 0) mode = 1;
+  }
   if (mode > 1) {
     m_stream.println(F("ERR SWEEP: need 'addr' or 'freq'. See HELP."));
     return;
@@ -380,6 +412,64 @@ void SerialConsole::cmdSweep(const char* args) {
   memset(&req, 0, sizeof(req));
   req.cmd = CmdID::CMD_SWEEP_START;
   req.sweepStart.mode = mode;
+  // 默认全部覆盖字段为 -1 (用当前配置/默认值)
+  req.sweepStart.encoding   = -1;
+  req.sweepStart.baudRate   = -1;
+  req.sweepStart.phase      = -1;
+  req.sweepStart.tone       = -1;
+  req.sweepStart.msgType    = -1;
+  req.sweepStart.intervalMs = -1;
+
+  // 解析参数覆盖 (规格 §8.3 附录 A), 非法 key 或非法值均报错
+  bool badParam = false;
+  char badKey[24] = "";
+  while ((tok = strtok(nullptr, " ")) != nullptr) {
+    char* eq = strchr(tok, '=');
+    if (!eq) continue;
+    *eq = '\0';
+    const char* key = tok;
+    const char* val = eq + 1;
+
+    if (strcasecmp(key, "encoding") == 0) {
+      if (strcasecmp(val, "pocsag") == 0)      req.sweepStart.encoding = 0;
+      else if (strcasecmp(val, "flex") == 0)   req.sweepStart.encoding = 1;
+      else { badParam = true; strncpy(badKey, key, sizeof(badKey) - 1); }
+    } else if (strcasecmp(key, "baud") == 0) {
+      int b = atoi(val);
+      if (b == 512 || b == 1200 || b == 1600 || b == 2400 ||
+          b == 3200 || b == 6400) {
+        req.sweepStart.baudRate = b;
+      } else { badParam = true; strncpy(badKey, key, sizeof(badKey) - 1); }
+    } else if (strcasecmp(key, "phase") == 0) {
+      if (strcasecmp(val, "norm") == 0)        req.sweepStart.phase = 0;
+      else if (strcasecmp(val, "inv") == 0)    req.sweepStart.phase = 1;
+      else { badParam = true; strncpy(badKey, key, sizeof(badKey) - 1); }
+    } else if (strcasecmp(key, "tone") == 0) {
+      char t = val[0] | 32;
+      if (t >= 'a' && t <= 'd' && val[1] == '\0') {
+        req.sweepStart.tone = t - 'a';
+      } else { badParam = true; strncpy(badKey, key, sizeof(badKey) - 1); }
+    } else if (strcasecmp(key, "msgType") == 0) {
+      if (strcasecmp(val, "num") == 0)         req.sweepStart.msgType = 0;
+      else if (strcasecmp(val, "alpha") == 0)  req.sweepStart.msgType = 1;
+      else { badParam = true; strncpy(badKey, key, sizeof(badKey) - 1); }
+    } else if (strcasecmp(key, "interval") == 0) {
+      int iv = atoi(val);
+      if (iv > 0 && iv <= 60000) {
+        req.sweepStart.intervalMs = iv;
+      } else { badParam = true; strncpy(badKey, key, sizeof(badKey) - 1); }
+    } else {
+      badParam = true; strncpy(badKey, key, sizeof(badKey) - 1);
+    }
+  }
+
+  if (badParam) {
+    m_stream.print(F("ERR SWEEP: invalid parameter '"));
+    m_stream.print(badKey[0] ? badKey : "?");
+    m_stream.println(F("'. See HELP."));
+    return;
+  }
+
   api_dispatch(&req, &resp);
 
   if (resp.code == RespCode::OK) {
@@ -393,7 +483,7 @@ void SerialConsole::cmdSweep(const char* args) {
     } else {
       m_stream.print(F(" start="));
       m_stream.print(cfg.freqKHz);
-      m_stream.print(F("kHz step=25kHz max=300000kHz"));
+      m_stream.print(F("kHz step=25kHz max=999999kHz"));
     }
     m_stream.println();
   } else {
@@ -402,6 +492,34 @@ void SerialConsole::cmdSweep(const char* args) {
     m_stream.print(F(" detail="));
     m_stream.println(resp.detail);
   }
+}
+
+void SerialConsole::cmdSweepStatus() {
+  CmdRequest req; CmdResponse resp;
+  memset(&req, 0, sizeof(req));
+  req.cmd = CmdID::CMD_SWEEP_STATUS;
+  api_dispatch(&req, &resp);
+
+  if (resp.code != RespCode::OK) {
+    m_stream.print(F("ERR SWEEP STATUS code="));
+    m_stream.println((int)resp.code);
+    return;
+  }
+
+  m_stream.print(F("OK SWEEP "));
+  if (resp.sweepStatus.running) {
+    m_stream.print(resp.sweepStatus.mode == 1 ? "running mode=addr" :
+                   resp.sweepStatus.mode == 2 ? "running mode=freq" : "running");
+    m_stream.print(F(" current="));
+    m_stream.print(resp.sweepStatus.current);
+  } else {
+    m_stream.print(F("idle"));
+  }
+  m_stream.print(F(" done="));
+  m_stream.print(resp.sweepStatus.done);
+  m_stream.print('/');
+  m_stream.print(resp.sweepStatus.total);
+  m_stream.println();
 }
 
 void SerialConsole::cmdStop() {

@@ -77,12 +77,15 @@ public:
   /**
    * @brief 直接发送已编码的 POCSAG 基带码字数组 (已含前导码)。
    *        一次 enterTx→send→exitTx, 不做额外编码/反相。
+   *        供 Sweeper 批量追码使用 (PocsagEncoder::encodeBatch 输出),
+   *        反相已由编码器处理。
    */
   void sendPocsagRaw(const unsigned long* baseband, int wordCount, int baudRate);
 
   /**
    * @brief 直接发送已编码的 FLEX 字节数组。
    *        一次 enterTx→send→exitTx, 可选字节级反相。
+   *        供 Sweeper 逐地址追码使用 (FlexEncoder 输出)。
    */
   void sendFlexRaw(const uint8_t* data, size_t len, int baudRate, bool invert);
 

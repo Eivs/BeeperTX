@@ -15,13 +15,22 @@ pio run --target upload --target monitor   # 烧录并打开串口
 
 没有单元测试 — 验证方式是通过串口观察发射日志输出，或使用频谱仪/RTL-SDR 确认射频输出。
 
+宿主机验证脚本 (无硬件可跑):
+
+```bash
+python3 tools/verify_pocsag_batch.py   # POCSAG 批量帧结构 9 用例
+node tools/verify_sweep_ui.js          # 前端扫描状态 UI 行为 9 用例
+bash tools/verify_sweeper_state.sh     # Sweeper 状态机 28 用例 (stub 外部依赖)
+bash tools/verify_serial_sweep.sh      # 串口 SWEEP 命令解析 20 用例 (START 前缀/参数校验)
+```
+
 ## 项目架构
 
 四层设计：
 
 ```
-src/main.cpp                 → 组装层: HW 初始化、组件 (API/WiFi/Web/串口) 编排、循环调度
-src/Controller/              → 控制层: API 调度 + Transmitter + WebServer + SerialConsole
+src/main.cpp                 → 组装层: HW 初始化、组件 (API/WiFi/Web/串口/Sweeper) 编排、循环调度
+src/Controller/              → 控制层: API 调度 + Transmitter + WebServer + SerialConsole + Sweeper
 src/WiFiManager/             → WiFi 管理: AP 配网 / STA 连接 / NVS 持久化
 lib/Pocsag/                  → 编码层: POCSAG 协议 (BCH, 码字组装, GB2312 中文)
 lib/Flex/                    → 编码层: FLEX 协议 (flex.h 单头文件, 含 GB2312 中文)
@@ -42,6 +51,18 @@ api_init() 默认配置 / Web/串口 API 动态设置
     → [FLEX]   sendBytes()                             GPIO0 bit-banging
     → Transmitter::exitTx()   Si446x_stopTX()
     → Si4463 直接 FSK 调制发射 (Direct TX Mode)
+```
+
+**Sweeper 批量追码路径** (main.cpp loop → s_sweeper.loop):
+
+```
+Sweeper::loop() 由 main.cpp loop() 每帧调用 (非阻塞, 批次间 intervalMs 节流)
+  → txAddrBatch() [POCSAG]  PocsagEncoder::encodeBatch() (8 地址/组共享前导码)
+                            → Transmitter::sendPocsagRaw()
+  → txAddrBatch() [FLEX]    FlexEncoder::encode() 逐地址
+                            → Transmitter::sendFlexRaw()
+  → txFreqOnce()             Si446x_setFrequencyKHz() (IDLE 状态) → Transmitter::send()
+                            完成后恢复起始频率
 ```
 
 ### 发射模式
@@ -122,13 +143,23 @@ api_init() 默认配置 / Web/串口 API 动态设置
 
 ## 已知问题
 
-1. **忙等待阻塞**: `Transmitter` 的位流发送使用 `while (esp_timer_get_time() < next)` 忙等待, 约 1–2s 阻塞, 可能触发 WDT。代码中每 500 位 `esp_task_wdt_reset()` 一次。
+1. **忙等待阻塞**: `Transmitter` 的位流发送使用 `while (esp_timer_get_time() < next)` 忙等待, 约 1–2s 阻塞, 可能触发 WDT。代码中每 500 位 `esp_task_wdt_reset()` 一次。Sweeper 发射期间同样阻塞: POCSAG 单批 (16 地址) 约 1.4s, FLEX 单帧约 1.9s, 期间主循环暂停 (间隔参数确保批次间有间隙)。
 2. **POCSAG 中文默认模式**: `deCodeAlpha()` 硬编码默认中文模式 (`inGB = true`), 纯 ASCII 消息会额外插入 `\x0F` 控制字符, 但对显示无影响。
 3. **FLEX 中文长度限制**: 受 FLEX 单帧最大 248 字符限制，中英混排消息中每个 GB2312 字计 2 字符，控制字符额外开销约 1–2 字节。
 4. **POCSAG 数字消息限制**: 数字消息需寻呼机本身支持 func=0 数字模式；字母消息使用 func=3 中文模式，两种模式不可混用。
 5. **FLEX 不支持 GB2312 非中文字符**: GB2312 编码中范围有限，非汉字区（如日文假名、俄文字母）未测试。
 6. **单帧 FLEX**: 当前只发送单帧消息 (frame 0)，不涉及跨帧拼接。
 7. **异步发射**: `CMD_TRANSMIT` 采用延迟执行模式——发射请求由 `api_dispatch()` 设置标志位，实际的 `Transmitter::send()` 在 `loop()` 中由 `api_loop()` 调度执行，避免阻塞 AsyncWebServer 事件循环。
+
+## Sweeper 扫描模块 (src/Controller/Sweeper)
+
+- **追码 POCSAG**: 批量 16 地址/批 (2 组 × 8, 共享前导码), 8 地址/子批检查 STOP；消息固定 NUMERIC 编码 (地址十进制串)。**批量仅支持 ≤5 位数字** (1 个消息码字)；6 位及以上或帧冲突自动降级逐地址标准发射。
+- **追码 FLEX**: 逐地址发射 (帧长 ~1.9s, 不批量)。
+- **追频**: 每次切换频率 + 完整发射, 步进 25 kHz, 默认上限 999999 kHz；**完成后把射频频率恢复为起始值** (避免下次手动 TX 落错频率)。
+- **串口命令**: `SWEEP [START] addr|freq [encoding=..] [baud=..] [phase=..] [tone=..] [msgType=..] [interval=..]`（`START` 前缀可选）、`SWEEP [START] stop|status`（`STOP` 是 `SWEEP stop` 的别名）。参数值非法（如 `baud=999`、`encoding=garbage`）返回 `ERR SWEEP: invalid parameter`。
+- **REST**: `POST /api/sweep/start {"mode":"addr"|"freq"}`、`POST /api/sweep/stop`、`GET /api/sweep/status` → `{running,mode,current,total,done}`。
+- **扫描期间禁止**: `SET_CONFIG` / `TRANSMIT` 返回 `ERR_BUSY` (避免与扫描发射冲突)。
+- **调度**: `Sweeper::loop()` 由 `main.cpp` loop() 调用, 非阻塞状态机, 批次间按 `intervalMs` (默认 500ms) 节流。
 
 ## 项目配置
 

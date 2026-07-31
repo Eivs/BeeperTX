@@ -55,6 +55,7 @@ private:
   void cmdWifi(const char* args);
   void cmdScan();
   void cmdSweep(const char* args);
+  void cmdSweepStatus();
   void cmdStop();
   void cmdReset();
   void cmdPing();

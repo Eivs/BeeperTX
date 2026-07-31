@@ -325,25 +325,27 @@
       const running = s.running === true || s.running === 'true';
       setSweepRunningUI(running);
 
-      if (running) {
-        const modeText = document.getElementById('sweep-mode-text');
-        const curText  = document.getElementById('sweep-current-text');
-        const cntText  = document.getElementById('sweep-count-text');
+      if (!running) return;  // 非运行态: setSweepRunningUI 已隐藏状态行
 
-        if (modeText) {
-          modeText.textContent = (s.mode === 1) ? 'Addr' : 'Freq';
+      // 仅运行态按 mode 显示 (mode: 1=Addr, 2=Freq)
+      const modeText = document.getElementById('sweep-mode-text');
+      const curText  = document.getElementById('sweep-current-text');
+      const cntText  = document.getElementById('sweep-count-text');
+
+      if (modeText) {
+        modeText.textContent = (s.mode === 1) ? 'Addr' : 'Freq';
+      }
+      if (curText) {
+        if (s.mode === 1) {
+          curText.textContent = 'addr=' + s.current;
+        } else {
+          let freqMHz = (s.current / 1000).toFixed(3);
+          curText.textContent = freqMHz + ' MHz';
         }
-        if (curText) {
-          if (s.mode === 1) {
-            curText.textContent = 'addr=' + s.current;
-          } else {
-            let freqMHz = (s.current / 1000).toFixed(3);
-            curText.textContent = freqMHz + ' MHz';
-          }
-        }
-        if (cntText) {
-          cntText.textContent = s.totalSent;
-        }
+      }
+      if (cntText) {
+        // 进度: done/total (规格 §9.4)
+        cntText.textContent = s.done + '/' + s.total;
       }
     } catch(e) { /* ignore poll errors */ }
   }

@@ -333,22 +333,29 @@ static void handleSweepStart(const CmdRequest* req, CmdResponse* resp) {
     return;
   }
 
-  // 构建 Sweeper 配置 — 发射参数从当前 s_config 继承
+  // 构建 Sweeper 配置 — 发射参数从当前 s_config 继承, 覆盖字段可覆盖
   Sweeper::Config cfg;
   cfg.mode      = (m == 0) ? Sweeper::ADDR_SWEEP : Sweeper::FREQ_SWEEP;
   cfg.addrStart = s_config.address;
   cfg.freqStartKHz = s_config.freqKHz;
-  // 以下使用 Sweeper 默认常量, Config 结构体已设默认值
-  // cfg.freqStepKHz / cfg.freqMaxKHz 从 Config 默认继承
+  // cfg.freqStepKHz / cfg.freqMaxKHz / cfg.addrEnd / cfg.intervalMs
+  // 使用 Config 结构体默认值 (D1/D5/D7)
   cfg.encoding  = (s_config.encoding == EncodingType::POCSAG)
                       ? 0 : 1;  // Transmitter::POCSAG/FLEX
   cfg.phase     = (s_config.phase == PhaseType::NORMAL) ? 0 : 1;
   cfg.tone      = (int)s_config.tone;
   cfg.msgType   = (s_config.msgType == MsgType::NUMERIC) ? 0 : 1;
   cfg.baudRate  = s_config.baudRate;
-  cfg.txPower   = s_config.txPower;
   cfg.freqKHz   = s_config.freqKHz;
   cfg.address   = s_config.address;
+
+  // 可选覆盖字段 (>=0 才覆盖, -1=未指定)
+  if (req->sweepStart.encoding  >= 0) cfg.encoding  = req->sweepStart.encoding;
+  if (req->sweepStart.baudRate   >= 0) cfg.baudRate  = req->sweepStart.baudRate;
+  if (req->sweepStart.phase      >= 0) cfg.phase     = req->sweepStart.phase;
+  if (req->sweepStart.tone       >= 0) cfg.tone      = req->sweepStart.tone;
+  if (req->sweepStart.msgType    >= 0) cfg.msgType   = req->sweepStart.msgType;
+  if (req->sweepStart.intervalMs >= 0) cfg.intervalMs = (uint16_t)req->sweepStart.intervalMs;
 
   int result = s_sweeper->start(cfg);
   if (result == 0) {
@@ -366,6 +373,31 @@ static void handleSweepStart(const CmdRequest* req, CmdResponse* resp) {
 }
 
 // ============================================================
+// api_sweepStartSimple — Web/串口快捷入口 (规格 §8.2)
+// 从当前 TxConfig 填充扫描配置, 全部覆盖字段使用哨兵 -1 (用当前/默认)。
+// ============================================================
+
+RespCode api_sweepStartSimple(uint8_t mode, uint32_t* startOut) {
+  CmdRequest req; CmdResponse resp;
+  memset(&req, 0, sizeof(req));
+  req.cmd = CmdID::CMD_SWEEP_START;
+  req.sweepStart.mode = mode;
+  req.sweepStart.encoding   = -1;
+  req.sweepStart.baudRate   = -1;
+  req.sweepStart.phase      = -1;
+  req.sweepStart.tone       = -1;
+  req.sweepStart.msgType    = -1;
+  req.sweepStart.intervalMs = -1;
+  api_dispatch(&req, &resp);
+
+  if (startOut && resp.code == RespCode::OK) {
+    TxConfig cfg = api_getConfig();
+    *startOut = (mode == 0) ? cfg.address : cfg.freqKHz;
+  }
+  return resp.code;
+}
+
+// ============================================================
 // Handler: SWEEP_STOP
 // ============================================================
 
@@ -373,9 +405,10 @@ static void handleSweepStop(const CmdRequest* req, CmdResponse* resp) {
   resp->cmd = CmdID::CMD_SWEEP_STOP;
 
   if (s_sweeper && s_sweeper->isRunning()) {
+    Sweeper::Status st = s_sweeper->getStatus();
     char logLine[64];
-    snprintf(logLine, sizeof(logLine), "SWEEP STOP sent=%lu",
-             (unsigned long)s_sweeper->totalSent());
+    snprintf(logLine, sizeof(logLine), "SWEEP STOP done=%lu/%lu",
+             (unsigned long)st.done, (unsigned long)st.total);
     api_log(logLine);
     s_sweeper->stop();
   }
@@ -391,10 +424,12 @@ static void handleSweepStatus(const CmdRequest* req, CmdResponse* resp) {
   resp->code = RespCode::OK;
 
   if (s_sweeper) {
-    resp->sweepStatus.running   = s_sweeper->isRunning();
-    resp->sweepStatus.mode      = (uint8_t)s_sweeper->mode();
-    resp->sweepStatus.current   = s_sweeper->current();
-    resp->sweepStatus.totalSent = s_sweeper->totalSent();
+    Sweeper::Status st = s_sweeper->getStatus();
+    resp->sweepStatus.running = st.running;
+    resp->sweepStatus.mode    = st.mode;
+    resp->sweepStatus.current = st.current;
+    resp->sweepStatus.total   = st.total;
+    resp->sweepStatus.done    = st.done;
   } else {
     memset(&resp->sweepStatus, 0, sizeof(resp->sweepStatus));
   }
@@ -525,9 +560,7 @@ void api_loop() {
       strncpy(s_config.message, savedMsg, sizeof(s_config.message) - 1);
     }
   }
-
-  // Sweeper 调度 (非阻塞)
-  if (s_sweeper) s_sweeper->loop();
+  // 注: Sweeper 调度由 main.cpp loop() 调用, 不在此处 (规格 §8.4)
 }
 
 // ============================================================

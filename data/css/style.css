@@ -97,6 +97,28 @@ body.terminal {
   overflow: hidden;
 }
 
+.custom-scroll {
+  /* Standard properties */
+  scrollbar-width: thin;
+  scrollbar-color: #88888888 #ffffff00;
+  overflow-y: auto;
+}
+
+.custom-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+.custom-scroll::-webkit-scrollbar-track {
+  background: #ffffff00;
+  border-radius: 4px;
+}
+.custom-scroll::-webkit-scrollbar-thumb {
+  background: #88888888;
+  border-radius: 4px;
+}
+.custom-scroll::-webkit-scrollbar-thumb:hover {
+  background: #55555555;
+}
+
 /* ---- Config Panel ---- */
 #config-panel {
   width: 300px;

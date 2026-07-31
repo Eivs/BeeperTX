@@ -48,16 +48,22 @@ public:
               bool invert = false);
 
   /**
-   * @brief 批量编码 — 多个地址共用一个前导码, 逐批拼接。
-   * @param addresses  地址数组
+   * @brief 批量编码 — 多个地址共用一个前导码, 按规格帧结构拼接。
+   *
+   * 帧结构 (规格 §4.2): 每组 = [SYNC] + 8 帧 × [Addr][Msg], 最多 8 地址共享一组。
+   * 地址放入其 (addr & 0x07) 对应的帧槽, 消息码字紧跟其后 (每组每地址 1 个消息 CW)。
+   *
+   * @param addresses  地址数组 (需连续递增, 且每条消息必须 ≤1 个消息码字)
    * @param addrCount  地址数量
    * @param function   2-bit 功能码 (0-3)
    * @param mode       消息编码方式 (NUMERIC=4-bit BCD, ALPHANUMERIC=7-bit ASCII)
    * @param invert     反相发射
-   * @return 基带总码字数
+   * @param addrEncoded [out] 可选: 实际编码的地址数 (任一地址消息 >1 CW 时返回 0)
+   * @return 基带总码字数; 0 = 参数非法或消息超过 1 个码字 (调用方需降级逐地址发送)
    */
   int encodeBatch(const uint32_t *addresses, int addrCount,
-                  int function, DisplayMode mode, bool invert);
+                  int function, DisplayMode mode, bool invert,
+                  int *addrEncoded = nullptr);
 
   /** @return 基带码字缓冲区指针 */
   const unsigned long *getBaseband() const { return m_baseband; }

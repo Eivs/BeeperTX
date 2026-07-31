@@ -471,25 +471,21 @@ void WebServer::onSweepStart(AsyncWebServerRequest* req, uint8_t* data, size_t l
     return;
   }
 
-  CmdRequest r; CmdResponse resp;
-  memset(&r, 0, sizeof(r));
-  r.cmd = CmdID::CMD_SWEEP_START;
-  r.sweepStart.mode = mode;
-  api_dispatch(&r, &resp);
+  // 从当前 TxConfig 填充并启动 (规格 §8.2 / §9.4)
+  uint32_t start = 0;
+  RespCode code = api_sweepStartSimple(mode, &start);
 
-  if (resp.code == RespCode::OK) {
-    TxConfig cfg = api_getConfig();
+  if (code == RespCode::OK) {
     const char* modeName = (mode == 0) ? "addr" : "freq";
     char buf[256];
     snprintf(buf, sizeof(buf),
              "{\"code\":0,\"mode\":\"%s\",\"start\":%lu}",
-             modeName,
-             (unsigned long)((mode == 0) ? cfg.address : cfg.freqKHz));
+             modeName, (unsigned long)start);
     req->send(200, "application/json", buf);
   } else {
     char buf[128];
     snprintf(buf, sizeof(buf), "{\"code\":%d,\"detail\":%d}",
-             (int)resp.code, resp.detail);
+             (int)code, (int)code);
     req->send(400, "application/json", buf);
   }
 }
@@ -514,11 +510,12 @@ void WebServer::onSweepStatus(AsyncWebServerRequest* req) {
     char buf[256];
     snprintf(buf, sizeof(buf),
              "{\"code\":0,\"running\":%s,\"mode\":%d,"
-             "\"current\":%lu,\"totalSent\":%lu}",
+             "\"current\":%lu,\"total\":%lu,\"done\":%lu}",
              resp.sweepStatus.running ? "true" : "false",
              resp.sweepStatus.mode,
              (unsigned long)resp.sweepStatus.current,
-             (unsigned long)resp.sweepStatus.totalSent);
+             (unsigned long)resp.sweepStatus.total,
+             (unsigned long)resp.sweepStatus.done);
     req->send(200, "application/json", buf);
   } else {
     req->send(500, "application/json",

@@ -10,7 +10,7 @@
 // POCSAG 协议常量
 // ============================================================
 static const int PREAMBLE_BITS  = 576;   // POCSAG 标准前导码
-static const int TX_SETTLE_MS   = 10;  // Direct TX PLL 锁定等待
+static const int TX_SETTLE_MS   = 2;  // Direct TX PLL 锁定等待 (Si4463 典型 200µs, 2ms 含 10 倍余量)
 
 // ============================================================
 // 构造 / 析构
