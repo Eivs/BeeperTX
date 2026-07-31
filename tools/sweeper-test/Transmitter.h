@@ -1,4 +1,6 @@
 // 宿主机测试 stub — Transmitter 最小替代 (方法实现见 harness.cpp)
+// ⚠ 仅测试用精简接口: 勿当作生产代码修改; 若生产 Transmitter.h 变更导致编译失败,
+//   应在此同步精简 (本 stub 与 src/Controller/Transmitter.h 故意不同 — 只暴露测试所需子集)
 #pragma once
 #include <stdint.h>
 #include <stddef.h>

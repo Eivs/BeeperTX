@@ -77,6 +77,7 @@ void SerialConsole::processLine(const char* line) {
   else if (strcasecmp(cmd, "SCAN") == 0)   cmdScan();
   else if (strcasecmp(cmd, "SWEEP") == 0)  cmdSweep(args);
   else if (strcasecmp(cmd, "STOP") == 0)   cmdStop();
+  else if (strcasecmp(cmd, "SAVE") == 0)   cmdSave();
   else if (strcasecmp(cmd, "RESET") == 0)  cmdReset();
   else if (strcasecmp(cmd, "PING") == 0)   cmdPing();
   else {
@@ -126,6 +127,7 @@ void SerialConsole::printHelp() {
     "  WIFI                  Show WiFi status\n"
     "  WIFI ssid=X pass=Y    Set WiFi credentials (triggers reboot)\n"
     "  SCAN                  Scan nearby WiFi networks\n"
+    "  SAVE                  Persist current TX config to NVS (survives reboot)\n"
     "  RESET                 Reboot device\n"
     "  PING                  Heartbeat\n"
   ));
@@ -136,6 +138,27 @@ void SerialConsole::printHelp() {
 // ============================================================
 
 void SerialConsole::cmdHelp() { printHelp(); }
+
+// ============================================================
+// SAVE — 将当前配置持久化到 NVS
+// ============================================================
+
+void SerialConsole::cmdSave() {
+  CmdRequest req; CmdResponse resp;
+  memset(&req, 0, sizeof(req));
+  req.cmd = CmdID::CMD_SAVE_CONFIG;
+  req.payloadType = PayloadType::NONE;
+  api_dispatch(&req, &resp);
+
+  if (resp.code == RespCode::OK) {
+    m_stream.println(F("OK SAVE: config persisted to NVS"));
+  } else {
+    m_stream.print(F("ERR SAVE: code="));
+    m_stream.print((int)resp.code);
+    m_stream.print(F(" detail="));
+    m_stream.println((int)resp.detail);
+  }
+}
 
 void SerialConsole::cmdPing() {
   CmdRequest req; CmdResponse resp;
@@ -150,6 +173,7 @@ void SerialConsole::cmdStatus() {
   CmdRequest req; CmdResponse resp;
   memset(&req, 0, sizeof(req));
   req.cmd = CmdID::CMD_GET_STATUS;
+  req.payloadType = PayloadType::NONE;
   api_dispatch(&req, &resp);
 
   if (resp.code != RespCode::OK) {
@@ -176,6 +200,7 @@ void SerialConsole::cmdConfig() {
   CmdRequest req; CmdResponse resp;
   memset(&req, 0, sizeof(req));
   req.cmd = CmdID::CMD_GET_CONFIG;
+  req.payloadType = PayloadType::NONE;
   api_dispatch(&req, &resp);
 
   TxConfig& c = resp.config;
@@ -253,6 +278,7 @@ void SerialConsole::cmdSet(const char* args) {
   CmdRequest req; CmdResponse resp;
   memset(&req, 0, sizeof(req));
   req.cmd = CmdID::CMD_SET_CONFIG;
+  req.payloadType = PayloadType::SET_CONFIG;
   req.setConfig = cfg;
   api_dispatch(&req, &resp);
 
@@ -271,6 +297,7 @@ void SerialConsole::cmdTx(const char* args) {
   CmdRequest req; CmdResponse resp;
   memset(&req, 0, sizeof(req));
   req.cmd = CmdID::CMD_TRANSMIT;
+  req.payloadType = PayloadType::TRANSMIT_MSG;
 
   // 可选消息覆盖
   if (args && *args) {
@@ -305,6 +332,7 @@ void SerialConsole::cmdWifi(const char* args) {
     CmdRequest req; CmdResponse resp;
     memset(&req, 0, sizeof(req));
     req.cmd = CmdID::CMD_SET_WIFI;
+    req.payloadType = PayloadType::WIFI_CRED;
 
     // 解析 ssid=... pass=...
     const char* s = strstr(args, "ssid=");
@@ -342,6 +370,7 @@ void SerialConsole::cmdWifi(const char* args) {
   CmdRequest req; CmdResponse resp;
   memset(&req, 0, sizeof(req));
   req.cmd = CmdID::CMD_GET_WIFI_STATUS;
+  req.payloadType = PayloadType::NONE;
   api_dispatch(&req, &resp);
 
   if (resp.code == RespCode::OK) {
@@ -356,11 +385,13 @@ void SerialConsole::cmdScan() {
   CmdRequest req; CmdResponse resp;
   memset(&req, 0, sizeof(req));
   req.cmd = CmdID::CMD_SCAN_WIFI;
+  req.payloadType = PayloadType::NONE;
   api_dispatch(&req, &resp);
 
   if (resp.code == RespCode::OK) {
+    // 扫描结果 JSON 由 api_getScanCache() 提供 (CmdResponse union 已不含 4KB 缓存)
     m_stream.print(F("OK SCAN "));
-    m_stream.println(resp.wifi.scanResult);
+    m_stream.println(api_getScanCache());
   }
 }
 
@@ -411,6 +442,7 @@ void SerialConsole::cmdSweep(const char* args) {
   CmdRequest req; CmdResponse resp;
   memset(&req, 0, sizeof(req));
   req.cmd = CmdID::CMD_SWEEP_START;
+  req.payloadType = PayloadType::SWEEP_START;
   req.sweepStart.mode = mode;
   // 默认全部覆盖字段为 -1 (用当前配置/默认值)
   req.sweepStart.encoding   = -1;
@@ -498,6 +530,7 @@ void SerialConsole::cmdSweepStatus() {
   CmdRequest req; CmdResponse resp;
   memset(&req, 0, sizeof(req));
   req.cmd = CmdID::CMD_SWEEP_STATUS;
+  req.payloadType = PayloadType::NONE;
   api_dispatch(&req, &resp);
 
   if (resp.code != RespCode::OK) {
@@ -526,6 +559,7 @@ void SerialConsole::cmdStop() {
   CmdRequest req; CmdResponse resp;
   memset(&req, 0, sizeof(req));
   req.cmd = CmdID::CMD_SWEEP_STOP;
+  req.payloadType = PayloadType::NONE;
   api_dispatch(&req, &resp);
 
   if (resp.code == RespCode::OK) {

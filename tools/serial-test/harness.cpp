@@ -41,6 +41,7 @@ void api_dispatch(const CmdRequest* req, CmdResponse* resp) {
 // 其他 API 符号 (SerialConsole.cpp 可能引用)
 TxConfig api_getConfig() { TxConfig c; memset(&c, 0, sizeof(c)); c.address = 1000; c.freqKHz = 152675; return c; }
 void api_log(const char*) {}
+const char* api_getScanCache() { return "[{\"ssid\":\"TestAP\",\"rssi\":-45}]"; }
 
 // ---- 断言 ----
 int g_pass = 0, g_fail = 0;
@@ -125,6 +126,13 @@ int main() {
   g_dispatchCalled = false;
   console.processLine("SWEEP START addr bogus=1");
   check("bogus=1 不触发 dispatch", !g_dispatchCalled);
+
+  printf("== C: SAVE 命令 (NVS 持久化入口) ==\n");
+  // 14. SAVE 触发 CMD_SAVE_CONFIG
+  g_dispatchCalled = false; g_out.clear();
+  console.processLine("SAVE");
+  check("SAVE 触发 dispatch", g_dispatchCalled && g_lastReq.cmd == CmdID::CMD_SAVE_CONFIG);
+  check("SAVE 输出 OK", g_out.find("OK SAVE") != std::string::npos);
 
   printf("\n结果: %d PASS, %d FAIL\n", g_pass, g_fail);
   return g_fail ? 1 : 0;

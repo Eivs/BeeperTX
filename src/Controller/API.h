@@ -141,7 +141,29 @@ struct WiFiStatus {
   char     ssid[33];      // 当前连接 SSID
   char     ip[16];        // IP 地址字符串
   int8_t   rssi;          // WiFi 信号强度 (dBm), -1 = N/A
-  char     scanResult[4096];// WiFi 扫描结果 (JSON), CMD_SCAN_WIFI 时填充
+  // 注: 扫描结果 (JSON) 不再放进 union — 体积大 (4KB) 且会撑爆任务栈。
+  //     由 api_getScanCache() 独立提供, 传输层 (Web/串口) 直接引用。
+};
+
+// ============================================================
+// 负载判别 (防联合体误读)
+// ============================================================
+
+/**
+ * @brief CmdRequest 联合体实际负载类型。
+ *
+ * 传输层在填充 union 后必须同步设置 payloadType, 调度器在处理前校验,
+ * 防止 "传输层填了 A 成员、处理器却读 B 成员" 的未定义行为。
+ * NONE = 无参数命令 (PING/GET_STATUS/GET_CONFIG/RESET/ABORT/SCAN_WIFI/
+ *        GET_WIFI_STATUS/SWEEP_STOP/SWEEP_STATUS)。
+ */
+enum class PayloadType : uint8_t {
+  NONE         = 0,
+  SET_CONFIG   = 1,   //!< union.setConfig
+  TRANSMIT_MSG = 2,   //!< union.transmitMsg
+  WIFI_CRED    = 3,   //!< union.wifiCred
+  LOG_COUNT    = 4,   //!< union.logCount
+  SWEEP_START  = 5,   //!< union.sweepStart
 };
 
 // ============================================================
@@ -149,7 +171,8 @@ struct WiFiStatus {
 // ============================================================
 
 struct CmdRequest {
-  CmdID cmd;               // 命令 ID (必填)
+  CmdID       cmd;         // 命令 ID (必填)
+  PayloadType payloadType; // 联合体实际负载 (传输层填写, 调度器校验)
 
   union {
     // CMD_SET_CONFIG:       完整发射配置

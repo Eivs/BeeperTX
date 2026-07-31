@@ -7,6 +7,52 @@
 #include "esp_task_wdt.h"
 
 // ============================================================
+// 后台发射任务 (core 1) — 位敲击移出 loopTask
+// ============================================================
+
+void Transmitter::ensureTask() {
+  if (m_queue) return;
+  m_queue = xQueueCreate(1, sizeof(Job));
+  m_done  = xSemaphoreCreateCounting(1, 0);
+  // core 1: 与 loopTask 同核但优先级更高, 发射时独占该核;
+  // core 0 (WiFi/AsyncTCP/Web) 完全不受影响。
+  xTaskCreatePinnedToCore(txTaskEntry, "txTask", 4096, this, 3, &m_task, 1);
+}
+
+void Transmitter::txTaskEntry(void* arg) {
+  static_cast<Transmitter*>(arg)->txTaskMain();
+}
+
+void Transmitter::txTaskMain() {
+  // 注册到 Task WDT: 发射期间 txTask 独占 core 1 (抢占 loopTask),
+  // loopTask 的 WDT 订阅已在 main.cpp setup() 中移除; 本任务接管
+  // "长发射不触发复位" 的喂狗职责, 同时保留系统级安全网
+  // (txTask 卡死时 WDT 仍会复位系统)。
+  esp_task_wdt_add(NULL);
+
+  Job job;
+  while (xQueueReceive(m_queue, &job, portMAX_DELAY)) {
+    switch (job.type) {
+      case JobType::POCSAG:     sendPocsag(job.cfg); break;
+      case JobType::RAW_POCSAG: sendPocsagRawImpl(job.baseband, job.wordCount, job.baudRate); break;
+      case JobType::RAW_FLEX:   sendFlexRawImpl(job.data, job.len, job.baudRate, job.invert); break;
+    }
+    xSemaphoreGive(m_done);
+  }
+}
+
+void Transmitter::submit(Job& job) {
+  // 入队 (单槽, 等槽空闲) 后阻塞等待发送完成, 保持同步语义。
+  xQueueSend(m_queue, &job, portMAX_DELAY);
+  xSemaphoreTake(m_done, portMAX_DELAY);
+}
+
+void Transmitter::feedWatchdog() {
+  // 喂当前任务 (txTask) 的 WDT — 发射独占 core 1, 由本任务维护安全网。
+  esp_task_wdt_reset();
+}
+
+// ============================================================
 // POCSAG 协议常量
 // ============================================================
 static const int PREAMBLE_BITS  = 576;   // POCSAG 标准前导码
@@ -74,8 +120,8 @@ void Transmitter::sendPreambleBits(int bits, int bitTimeUs, bool invert) {
     digitalWrite(m_txPin, bit ? HIGH : LOW);
     next += bitTimeUs;
     while (esp_timer_get_time() < next) {}
-    // 每 500 位喂一次看门狗, 防止长帧触发 WDT
-    if (++wdtCnt >= 500) { wdtCnt = 0; esp_task_wdt_reset(); }
+    // 每 500 位喂一次看门狗, 防止长帧触发 WDT (喂 loopTask, 因发射任务抢占它)
+    if (++wdtCnt >= 500) { wdtCnt = 0; feedWatchdog(); }
   }
 }
 
@@ -94,7 +140,7 @@ void Transmitter::sendCodewords(const unsigned long* cw, int count, int bitTimeU
       next += bitTimeUs;
       while (esp_timer_get_time() < next) {}
     }
-    if (++wdtCnt >= 500) { wdtCnt = 0; esp_task_wdt_reset(); }
+    if (++wdtCnt >= 500) { wdtCnt = 0; feedWatchdog(); }
   }
 }
 
@@ -112,7 +158,7 @@ void Transmitter::sendBytes(const uint8_t* data, size_t len, int bitTimeUs) {
       next += bitTimeUs;
       while (esp_timer_get_time() < next) {}
     }
-    if (++wdtCnt >= 500) { wdtCnt = 0; esp_task_wdt_reset(); }
+    if (++wdtCnt >= 500) { wdtCnt = 0; feedWatchdog(); }
   }
 }
 
@@ -120,8 +166,8 @@ void Transmitter::sendBytes(const uint8_t* data, size_t len, int bitTimeUs) {
 // POCSAG 发射
 // ============================================================
 void Transmitter::sendPocsag(const Config& cfg) {
-  // static: 缓冲区 (~5KB) 在 .bss 段, 而非栈上, 防止栈溢出
-  static PocsagEncoder encoder;
+  // 编码器为实例成员 (.bss), 不占任务栈; 非重入问题已消除。
+  PocsagEncoder& encoder = m_pocsagEncoder;
   // Si4463 的 FSK MARK/SPACE 极性与寻呼机解调器预期相反,
   // 故 NORMAL = 基带反转以补偿硬件极性。
   bool invert = (cfg.phase == NORMAL);
@@ -184,13 +230,13 @@ void Transmitter::sendFlex(const Config& cfg) {
     //   \x0E — 进入中文模式 (Shift Out, 两字节配对)
     //   \x0F — 进入英文模式 (Shift In,  单字节 ASCII)
     // 寻呼机默认中文模式，与 POCSAG 的 deCodeAlpha() 一致。
-    static uint8_t mixed[512];    // 加控制字符后的输出缓冲区
+    uint8_t* mixed = m_flexMixed;   // 实例成员, 非 static (重入安全)
     String gbStr = GB.get(String(cfg.message));
     size_t gbLen = gbStr.length();
 
     size_t m = 0;
     bool inChinese = true;  // 默认中文模式
-    for (size_t i = 0; i < gbLen && m < sizeof(mixed) - 8; i++) {
+    for (size_t i = 0; i < gbLen && m < sizeof(m_flexMixed) - 8; i++) {
       uint8_t byte = (uint8_t)gbStr[i];  // 直接索引 String, 无拷贝
       if (byte >= 0x80) {
         // GB2312 中文字节
@@ -247,32 +293,53 @@ void Transmitter::sendFlex(const Config& cfg) {
 }
 
 // ============================================================
-// 公开 API — 统一入口
+// 公开 API — 统一入口 (入队到 txTask 执行, 同步等待)
 // ============================================================
 void Transmitter::send(const Config& cfg) {
-  switch (cfg.encoding) {
-    case POCSAG:
-      sendPocsag(cfg);
-      break;
-    case FLEX:
-      sendFlex(cfg);
-      break;
-  }
+  ensureTask();
+  Job job;
+  job.type = JobType::POCSAG;
+  job.cfg  = cfg;
+  submit(job);
 }
 
 // ============================================================
-// 原始发送 — Sweeper 等模块直接使用已编码数据
+// 原始发送 — Sweeper 等模块直接使用已编码数据 (入队到 txTask)
 // ============================================================
 void Transmitter::sendPocsagRaw(const unsigned long* baseband, int wordCount,
                                  int baudRate) {
+  ensureTask();
+  Job job;
+  job.type      = JobType::RAW_POCSAG;
+  job.baseband  = baseband;
+  job.wordCount = wordCount;
+  job.baudRate  = baudRate;
+  submit(job);
+}
+
+void Transmitter::sendFlexRaw(const uint8_t* data, size_t len,
+                               int baudRate, bool invert) {
+  ensureTask();
+  Job job;
+  job.type     = JobType::RAW_FLEX;
+  job.data     = data;
+  job.len      = len;
+  job.baudRate = baudRate;
+  job.invert   = invert;
+  submit(job);
+}
+
+// ---- 任务侧实际发送实现 (原逻辑, 在 txTask 上下文执行) ----
+void Transmitter::sendPocsagRawImpl(const unsigned long* baseband, int wordCount,
+                                     int baudRate) {
   int bt = bitTimeUs(baudRate);
   enterTx();
   sendCodewords(baseband, wordCount, bt);
   exitTx();
 }
 
-void Transmitter::sendFlexRaw(const uint8_t* data, size_t len,
-                               int baudRate, bool invert) {
+void Transmitter::sendFlexRawImpl(const uint8_t* data, size_t len,
+                                   int baudRate, bool invert) {
   int bt = bitTimeUs(baudRate);
   enterTx();
   if (invert) {

@@ -2,6 +2,12 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "Pocsag.h"
+#include "FlexEncoder.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
 
 /**
  * @brief 统一发射控制器 — 支持 POCSAG / FLEX 两种编码。
@@ -100,6 +106,51 @@ public:
 private:
   int  m_txPin;
   int  m_txCount = 0;   //!< 发射序号 (仅用于日志)
+
+  // 编码器/混频缓冲区作为实例成员 (.bss), 而非函数内 static:
+  // 消除模块级共享状态, 多个 Transmitter 实例可安全并发。
+  PocsagEncoder m_pocsagEncoder;   //!< POCSAG 编码器 (基带 ~5KB)
+  uint8_t       m_flexMixed[512];  //!< FLEX 中英混排控制字符缓冲
+
+  // ---- 后台发射任务 (核心架构: 位敲击移出 loopTask) ----
+  //
+  // ESP32-S3 双核布局:
+  //   core 0: WiFi 协议栈 + AsyncTCP (Web 请求处理) → 发射期间保持可用
+  //   core 1: loopTask (priority 1) + txTask (priority 3) → 发射独占
+  //
+  // send()/sendPocsagRaw()/sendFlexRaw() 通过单槽队列提交 Job,
+  // 阻塞等待 txTask 完成 (同步语义保持不变), 实际 μs 级位敲击
+  // 全部发生在 txTask (core 1, 高优先级), 不再卡死 Web 处理。
+  // 发射期间 loopTask 被高优先级 txTask 抢占 — 与重构前行为等价
+  // (原本就是同步阻塞), 但 Web/WiFi (core 0) 不再受影响。
+  enum class JobType : uint8_t {
+    POCSAG     = 0,  //!< 标准发射 (Config)
+    RAW_POCSAG = 1,  //!< Sweeper 批量追码
+    RAW_FLEX   = 2,  //!< Sweeper 逐地址追码
+  };
+  struct Job {
+    JobType type;
+    Config  cfg;                     // POCSAG
+    const unsigned long* baseband;   // RAW_POCSAG
+    int     wordCount;
+    const uint8_t* data;             // RAW_FLEX
+    size_t  len;
+    int     baudRate;
+    bool    invert;
+  };
+  QueueHandle_t     m_queue = nullptr;  //!< 单槽任务队列
+  TaskHandle_t      m_task  = nullptr;  //!< txTask 句柄
+  SemaphoreHandle_t m_done  = nullptr;  //!< 完成信号量 (计数, 初值 0)
+
+  void ensureTask();                        //!< 懒创建队列/任务/信号量
+  static void txTaskEntry(void* arg);
+  void txTaskMain();                        //!< 任务主体: 收 Job → 发送 → give
+  void submit(Job& job);                    //!< 入队 + 等待完成 (同步语义)
+  void feedWatchdog();                      //!< 喂 txTask 自身的 WDT (发射期间安全网)
+
+  // ---- 任务侧实际发送 (在 txTask 上下文执行) ----
+  void sendPocsagRawImpl(const unsigned long* baseband, int wordCount, int baudRate);
+  void sendFlexRawImpl(const uint8_t* data, size_t len, int baudRate, bool invert);
 
   // ---- Direct TX 流程 ----
   void enterTx();

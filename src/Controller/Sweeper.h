@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "Pocsag.h"
 
 // 前向声明
 class Transmitter;
@@ -105,6 +106,9 @@ private:
   uint32_t m_done;          // 已完成步数
   uint32_t m_origFreqKHz;   // 追频起始频率 (结束/停止时恢复)
   uint32_t m_nextTxMs;      // 下次发射时间戳 (millis)
+
+  // POCSAG 批量编码器作为实例成员 (.bss), 消除函数内 static 非重入状态
+  PocsagEncoder m_batchEncoder;
 
   /** 计算总步数 (规格 §7.2) */
   bool calcTotalSteps();

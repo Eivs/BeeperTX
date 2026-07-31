@@ -173,7 +173,7 @@ void Sweeper::txAddrBatch() {
     }
 
     // 拆分子批次: 每个子批次独立编码+发射, 中间检查 STOP
-    static PocsagEncoder encoder;
+    PocsagEncoder& encoder = m_batchEncoder;
     bool invert = (m_cfg.phase == Transmitter::NORMAL);
 
     int sent = 0;

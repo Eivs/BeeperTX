@@ -30,6 +30,7 @@
 #include "Sweeper.h"
 #include <Arduino.h>
 #include <SPI.h>
+#include "esp_task_wdt.h"
 
 // ============================================================
 // 引脚定义
@@ -119,6 +120,11 @@ static void printSi4463Info() {
 void setup() {
   Serial.begin(115200);
   delay(1000);
+
+  // 发射任务 (txTask, core 1 高优先级) 会在发射期间抢占本任务 (loopTask)。
+  // loopTask 的 Task WDT 订阅在此移除, 喂狗职责由 txTask 接管
+  // (见 Transmitter::txTaskMain); 否则长 POCSAG 帧 (>5s) 会误触 WDT 复位。
+  esp_task_wdt_delete(NULL);
 
   Serial.println(F("\n"
     "╔══════════════════════════════════════════╗\n"

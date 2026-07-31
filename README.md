@@ -138,6 +138,7 @@ AP 模式下内置 Captive Portal DNS，手机连接后自动弹出配网页面�
 | `WIFI` | WiFi 状态 | `WIFI` |
 | `WIFI` | 设置 WiFi 凭据并重启 | `WIFI ssid=MyWiFi pass=12345678` |
 | `SCAN` | 扫描附近 WiFi 网络 | `SCAN` |
+| `SAVE` | 将当前发射配置持久化到 NVS（重启后自动恢复） | `SAVE` |
 | `RESET` | 重启设备 | `RESET` |
 | `PING` | 心跳检测 | `PING` |
 
@@ -167,11 +168,27 @@ AP 模式下内置 Captive Portal DNS，手机连接后自动弹出配网页面�
   WIFI                  Show WiFi status
   WIFI ssid=X pass=Y    Set WiFi credentials (triggers reboot)
   SCAN                  Scan nearby WiFi networks
+  SAVE                  Persist current TX config to NVS (survives reboot)
   RESET                 Reboot device
   PING                  Heartbeat
 ```
 
 ### 命令详解与交互示例
+
+#### `SAVE` — 持久化配置
+
+将当前发射配置写入 ESP32 NVS（命名空间 `beepertx`），重启后由 `api_init()` 自动恢复。
+
+```
+> SET freq=155000 baud=1200
+OK SET
+> SAVE
+OK SAVE: config persisted to NVS
+> RESET
+...（重启）...
+> CONFIG
+freq=155000kHz baud=1200 ...
+```
 
 #### `PING` — 心跳检测
 

@@ -59,4 +59,5 @@ private:
   void cmdStop();
   void cmdReset();
   void cmdPing();
+  void cmdSave();
 };

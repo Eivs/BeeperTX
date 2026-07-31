@@ -1,4 +1,5 @@
 // 宿主机测试 stub — Arduino 框架最小替代
+// ⚠ 仅测试用精简接口: 勿当作生产代码修改; 仅覆盖宿主机编译所需子集
 #pragma once
 #include <stdint.h>
 #include <stddef.h>

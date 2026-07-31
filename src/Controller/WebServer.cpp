@@ -251,6 +251,7 @@ void WebServer::onPing(AsyncWebServerRequest* req) {
   CmdRequest r; CmdResponse resp;
   memset(&r, 0, sizeof(r));
   r.cmd = CmdID::CMD_PING;
+  r.payloadType = PayloadType::NONE;
   api_dispatch(&r, &resp);
 
   JsonDocument doc;
@@ -264,6 +265,7 @@ void WebServer::onStatus(AsyncWebServerRequest* req) {
   CmdRequest r; CmdResponse resp;
   memset(&r, 0, sizeof(r));
   r.cmd = CmdID::CMD_GET_STATUS;
+  r.payloadType = PayloadType::NONE;
   api_dispatch(&r, &resp);
 
   if (resp.code == RespCode::OK) {
@@ -277,6 +279,7 @@ void WebServer::onConfigGet(AsyncWebServerRequest* req) {
   CmdRequest r; CmdResponse resp;
   memset(&r, 0, sizeof(r));
   r.cmd = CmdID::CMD_GET_CONFIG;
+  r.payloadType = PayloadType::NONE;
   api_dispatch(&r, &resp);
 
   req->send(200, "application/json", configToJson(resp.config));
@@ -287,6 +290,7 @@ void WebServer::onConfigSet(AsyncWebServerRequest* req, uint8_t* data, size_t le
   CmdRequest getR; CmdResponse getResp;
   memset(&getR, 0, sizeof(getR));
   getR.cmd = CmdID::CMD_GET_CONFIG;
+  getR.payloadType = PayloadType::NONE;
   api_dispatch(&getR, &getResp);
   TxConfig cfg = getResp.config;
 
@@ -299,6 +303,7 @@ void WebServer::onConfigSet(AsyncWebServerRequest* req, uint8_t* data, size_t le
   CmdRequest setR; CmdResponse setResp;
   memset(&setR, 0, sizeof(setR));
   setR.cmd = CmdID::CMD_SET_CONFIG;
+  setR.payloadType = PayloadType::SET_CONFIG;
   setR.setConfig = cfg;
   api_dispatch(&setR, &setResp);
 
@@ -321,6 +326,7 @@ void WebServer::onTransmit(AsyncWebServerRequest* req, uint8_t* data, size_t len
   CmdRequest r; CmdResponse resp;
   memset(&r, 0, sizeof(r));
   r.cmd = CmdID::CMD_TRANSMIT;
+  r.payloadType = PayloadType::TRANSMIT_MSG;
 
   // 可选消息覆盖
   if (data && len > 0) {
@@ -373,7 +379,9 @@ void WebServer::onReset(AsyncWebServerRequest* req) {
 
 void WebServer::onWifiStatus(AsyncWebServerRequest* req) {
   CmdRequest r; CmdResponse resp;
+  memset(&r, 0, sizeof(r));
   r.cmd = CmdID::CMD_SCAN_WIFI;
+  r.payloadType = PayloadType::NONE;
   api_dispatch(&r, &resp);
 
   if (resp.code == RespCode::OK) {
@@ -385,7 +393,9 @@ void WebServer::onWifiStatus(AsyncWebServerRequest* req) {
 
 void WebServer::onWifiStatusQuick(AsyncWebServerRequest* req) {
   CmdRequest r; CmdResponse resp;
+  memset(&r, 0, sizeof(r));
   r.cmd = CmdID::CMD_GET_WIFI_STATUS;
+  r.payloadType = PayloadType::NONE;
   api_dispatch(&r, &resp);
 
   if (resp.code == RespCode::OK) {
@@ -411,6 +421,7 @@ void WebServer::onWifiSet(AsyncWebServerRequest* req, uint8_t* data, size_t len)
   CmdRequest r; CmdResponse resp;
   memset(&r, 0, sizeof(r));
   r.cmd = CmdID::CMD_SET_WIFI;
+  r.payloadType = PayloadType::WIFI_CRED;
   if (doc["ssid"].is<const char*>()) {
     String s = doc["ssid"].as<String>();
     strncpy(r.wifiCred.ssid, s.c_str(), sizeof(r.wifiCred.ssid) - 1);
@@ -430,7 +441,9 @@ void WebServer::onWifiSet(AsyncWebServerRequest* req, uint8_t* data, size_t len)
 
 void WebServer::onWifiScan(AsyncWebServerRequest* req) {
   CmdRequest r; CmdResponse resp;
+  memset(&r, 0, sizeof(r));
   r.cmd = CmdID::CMD_SCAN_WIFI;
+  r.payloadType = PayloadType::NONE;
   api_dispatch(&r, &resp);
 
   if (resp.code == RespCode::OK) {
@@ -494,6 +507,7 @@ void WebServer::onSweepStop(AsyncWebServerRequest* req) {
   CmdRequest r; CmdResponse resp;
   memset(&r, 0, sizeof(r));
   r.cmd = CmdID::CMD_SWEEP_STOP;
+  r.payloadType = PayloadType::NONE;
   api_dispatch(&r, &resp);
 
   req->send(200, "application/json",
@@ -504,6 +518,7 @@ void WebServer::onSweepStatus(AsyncWebServerRequest* req) {
   CmdRequest r; CmdResponse resp;
   memset(&r, 0, sizeof(r));
   r.cmd = CmdID::CMD_SWEEP_STATUS;
+  r.payloadType = PayloadType::NONE;
   api_dispatch(&r, &resp);
 
   if (resp.code == RespCode::OK) {
