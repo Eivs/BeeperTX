@@ -226,9 +226,9 @@ void setup() {
 // ============================================================
 static void loopMainTask(void*) {
   for (;;) {
-    if (g_radioReady) {
-      Si446x_SERVICE();
-    } else {
+    // Si446x_SERVICE 轮询在 core 1 (Arduino loop) — 与 txTask/AsyncTCP
+    // 同核, 避免跨核 SPI 并发 (见 Si446x.cpp 跨核互斥说明)
+    if (!g_radioReady) {
       radioRetryTick();  // 射频离线: 后台重试, 不阻塞其余功能
     }
     s_wifi.loop();
@@ -240,10 +240,15 @@ static void loopMainTask(void*) {
 }
 
 // ============================================================
-// loop (Arduino loopTask, core 1) — 空转
+// loop (Arduino loopTask, core 1) — Si446x 事件轮询
 // ============================================================
 void loop() {
-  // 业务主体已迁移到 core 0 (loopMainTask)。本函数保留空转以维持
-  // Arduino 框架契约; txTask (core 1) 发射时与本函数抢占, 无业务影响。
-  vTaskDelay(10);
+  // 业务主体已迁移到 core 0 (loopMainTask)。本函数在 core 1 提供
+  // Si446x 事件轮询: ISR (attachInterrupt) 只置标志, 实际 SPI 处理
+  // 在此持跨核互斥锁执行, 与 txTask/AsyncTCP 同核串行 — 避免跨核
+  // SPI 并发触发 interrupt WDT (见 Si446x.cpp 注释)。
+  if (g_radioReady) {
+    Si446x_SERVICE();
+  }
+  vTaskDelay(2);
 }

@@ -118,6 +118,35 @@ static inline uint8_t interrupt_on(void) {
 }
 
 // ------------------------------------------------------------------
+// 跨核 SPI 互斥 — 异步化后业务 loop (loopMainTask) 在 core 0, 而
+// txTask / AsyncTCP(webUI) / IRQ 在 core 1。同一 Si4463 SPI 被两个核
+// 并发访问会与 SPIClass 内部锁 + flash cache 交互, 触发
+// "Interrupt wdt timeout" 死锁。因此所有 SPI 事务 (doAPI/getFRR/
+// read/TX) 加递归互斥: 任务上下文阻塞等待 (可调度, 不关中断,
+// 不会 WDT); ISR (Si446x_SERVICE) 不做 SPI, 只置标志, 由 core 1
+// 任务轮询处理。
+// ------------------------------------------------------------------
+static SemaphoreHandle_t si446xSpiMutex() {
+  // magic static: 编译器保证单线程首次初始化 (任务上下文, 非 ISR)
+  static SemaphoreHandle_t m = xSemaphoreCreateRecursiveMutex();
+  return m;
+}
+
+static void si446xSpiLock() {
+  xSemaphoreTakeRecursive(si446xSpiMutex(), portMAX_DELAY);
+}
+
+static void si446xSpiUnlock() {
+  xSemaphoreGiveRecursive(si446xSpiMutex());
+}
+
+// RAII 锁守卫: 自动解锁所有 return 路径
+struct Si446xSpiGuard {
+  Si446xSpiGuard()  { si446xSpiLock(); }
+  ~Si446xSpiGuard() { si446xSpiUnlock(); }
+};
+
+// ------------------------------------------------------------------
 // SPI chip-select helpers
 // ------------------------------------------------------------------
 static inline uint8_t cselect(void) {
@@ -167,6 +196,8 @@ static uint8_t waitForResponse(void *out, uint8_t outLen, uint8_t useTimeout) {
 }
 
 static void doAPI(void *data, uint8_t len, void *out, uint8_t outLen) {
+  Si446xSpiGuard _lock;  // 跨核 SPI 互斥 (递归)
+
   // Disable the Si446x interrupt while communicating
   uint8_t irq = Si446x_irq_off();
 
@@ -217,6 +248,7 @@ static uint16_t getADC(uint8_t adc_en, uint8_t adc_cfg, uint8_t part) {
 }
 
 static uint8_t getFRR(uint8_t reg) {
+  Si446xSpiGuard _lock;  // 跨核 SPI 互斥 (递归)
   uint8_t frr = 0;
   SI446X_ATOMIC() {
     CHIPSELECT() {
@@ -653,6 +685,7 @@ uint8_t Si446x_sleep() {
 }
 
 void Si446x_read(void *buff, uint8_t len) {
+  Si446xSpiGuard _lock;  // 跨核 SPI 互斥 (递归)
   SI446X_ATOMIC() {
     CHIPSELECT() {
       spi_transfer_nr(SI446X_CMD_READ_RX_FIFO);
@@ -664,6 +697,7 @@ void Si446x_read(void *buff, uint8_t len) {
 
 uint8_t Si446x_TX(void *packet, uint8_t len, uint8_t channel,
                   si446x_state_t onTxFinish) {
+  Si446xSpiGuard _lock;  // 跨核 SPI 互斥 (递归, 序列原子)
   uint8_t irq = Si446x_irq_off();
 
   if (getState() == SI446X_STATE_TX) {
@@ -820,8 +854,22 @@ void Si446x_irq_on(uint8_t origVal) {
 
 // ------------------------------------------------------------------
 // Service routine — handles radio events
+// ISR 上下文只置标志 (ISR 无法获取任务递归互斥锁); 实际 SPI 处理
+// 由 core 1 任务轮询 (Arduino loop / 显式调用) 持跨核锁执行。
 // ------------------------------------------------------------------
+static volatile bool g_servicePending = false;
+
 void Si446x_SERVICE() {
+  // ISR 上下文 (GPIO 中断): 仅标记待处理, 不做 SPI
+  if (xPortInIsrContext()) {
+    g_servicePending = true;
+    return;
+  }
+
+  // 任务上下文: 跨核 SPI 互斥下执行事件处理 (内部 doAPI 递归加锁)
+  Si446xSpiGuard _lock;
+  g_servicePending = false;
+
   isrBusy = 1;
 
   uint8_t interrupts[8];
