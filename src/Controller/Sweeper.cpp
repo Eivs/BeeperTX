@@ -176,9 +176,9 @@ void Sweeper::txAddrBatch() {
     // 消息格式必须与功能码匹配 (POCSAG 标准): 寻呼机按功能码解码消息,
     // 字母功能码 (A/B/C) 收到 BCD 数字消息时按字母解 → 控制字符 → 空消息
     // (用户实测"追码收到空消息"根因)。encodeBatchMulti 按用户 msgType 编码
-    // (NUMERIC=BCD / ALPHANUMERIC=ASCII), 消息 = 地址十进制串, 每条消息
-    // 独立 batch 共享前导码 (恢复旧版批量速度); 消息放不下 batch 的地址
-    // (frame 7 + 长消息) 跳过, 由下方逐地址标准发射补发 (与单发一致)。
+    // (NUMERIC=BCD / ALPHANUMERIC=ASCII), 消息 = 地址十进制串, 单前导码
+    // 连续多 Batch 调度, 消息码字跨 SYNC 延续 (ITU-R M.584), 全地址进批量。
+    if (m_mode == IDLE) return;  // STOP 响应
 
     if (m_batchLeft == 0) {
       m_batchBase = m_current;
@@ -200,79 +200,40 @@ void Sweeper::txAddrBatch() {
     DisplayMode dm = (m_cfg.msgType == MsgType::NUMERIC)
                          ? MODE_NUMERIC : MODE_ALPHANUMERIC;
 
-    while (m_batchLeft > 0) {
-      if (m_mode == IDLE) return;  // STOP 响应
-
-      // 子批内补发进行中: 批量段已入队, 逐个补发 skipped 地址 (队列满暂停)
-      if (m_subPending < m_subCount) {
-        uint32_t addr = m_subAddrs[m_subPending];
-        if (m_subSkipped[m_subPending]) {
-          Transmitter::Config cfg;
-          cfg.encoding = EncodingType::POCSAG;
-          cfg.phase    = m_cfg.phase;
-          cfg.tone     = m_cfg.tone;
-          cfg.baudRate = m_cfg.baudRate;
-          cfg.address  = addr;
-          cfg.msgType  = m_cfg.msgType;
-          snprintf(cfg.message, sizeof(cfg.message), "%lu",
-                   (unsigned long)addr);
-          if (!m_tx->send(cfg)) return;  // 队列满: 下帧续传 (游标未推进)
-
-          char logLine[128];
-          snprintf(logLine, sizeof(logLine),
-                   "SWEEP addr=%lu POCSAG (batch skip)", (unsigned long)addr);
-          api_log(logLine);
-          Serial.print('.');
-        }
-        m_subPending++;
-        m_batchLeft--;
-        m_done++;
-        continue;
-      }
-
-      // 取新子批: 当前批内剩余地址
-      int sub = (m_batchLeft > SUB_BATCH_SIZE) ? SUB_BATCH_SIZE : (int)m_batchLeft;
-      uint32_t batchStart = m_batchBase + (m_batchSize - m_batchLeft);
-      for (int i = 0; i < sub; i++) {
-        m_subAddrs[i] = batchStart + i;
-        m_subSkipped[i] = false;
-      }
-      m_subCount = sub;
-      m_subPending = 0;
-
-      int addrEncoded = 0;
-      int words = encoder.encodeBatchMulti(m_subAddrs, sub,
-                                           static_cast<int>(m_cfg.tone), dm,
-                                           invert, &addrEncoded, m_subSkipped);
-
-      if (words > 0) {
-        // 批量段入队 (异步入队); 队列满: 丢弃子批状态, 下帧整子批重试
-        // (若保留 m_subCount/m_subPending, 下帧会误走补发分支跳过批量段)
-        if (!m_tx->sendPocsagRaw(encoder.getBaseband(), words, m_cfg.baudRate)) {
-          m_subCount = 0;
-          m_subPending = 0;
-          return;
-        }
-        char logLine[128];
-        snprintf(logLine, sizeof(logLine),
-                 "SWEEP addr batch: %lu-%lu (%d/%d addrs) POCSAG",
-                 (unsigned long)m_subAddrs[0],
-                 (unsigned long)m_subAddrs[sub - 1],
-                 addrEncoded, sub);
-        api_log(logLine);
-
-        Serial.print('.');
-        Serial.println(F(" OK"));
-      }
-      // words == 0: 全部地址被跳过 (如整子批都是 frame 7), 直接逐地址补发。
-      // 注意: m_subPending 保持 0, 下次循环进入补发分支逐个 send。
+    // 整批一次入队 (55 地址 ≤ encodeBatchMulti 的 MAX_BATCH, 恒可编码)
+    int sub = (int)m_batchLeft;
+    for (int i = 0; i < sub; i++) {
+      m_batchAddrs[i] = m_batchBase + i;
     }
+
+    int addrEncoded = 0;
+    int words = encoder.encodeBatchMulti(m_batchAddrs, sub,
+                                         static_cast<int>(m_cfg.tone), dm,
+                                         invert, &addrEncoded);
+    if (words > 0) {
+      if (!m_tx->sendPocsagRaw(encoder.getBaseband(), words, m_cfg.baudRate)) {
+        return;  // 队列满: 下帧重试 (m_batchLeft 未推进)
+      }
+      char logLine[128];
+      snprintf(logLine, sizeof(logLine),
+               "SWEEP addr batch: %lu-%lu (%d/%d addrs) POCSAG",
+               (unsigned long)m_batchAddrs[0],
+               (unsigned long)m_batchAddrs[sub - 1],
+               addrEncoded, sub);
+      api_log(logLine);
+
+      Serial.print('.');
+      Serial.println(F(" OK"));
+    } else {
+      // 理论不可达 (55 地址恒可编码): 防御推进, 避免卡死
+      api_log("SWEEP addr batch encode failed");
+    }
+    m_batchLeft -= sub;
+    m_done += (uint32_t)addrEncoded;
 
     m_current = m_batchBase + m_batchSize;
     m_batchBase = 0;
     m_batchSize = 0;
-    m_subCount = 0;
-    m_subPending = 0;
     if (isAddrMax()) {
       api_log("SWEEP addr complete");
       stop();

@@ -12,7 +12,7 @@ class Transmitter;
  * @brief 追码/追频 扫描模块 — 非阻塞状态机, 由主循环调用 loop()。
  *
  * 追码 (Address Sweep): 从起始地址开始, 步进 +1。
- *   POCSAG: 每批 16 地址 (2 组 × 8, 共享一个前导码), 8 地址/子批检查 STOP
+ *   POCSAG: 每批 55 地址, 单前导码连续多 Batch (消息跨 SYNC), 整批一次入队
  *   FLEX:   逐地址发射 (帧长 ~1.9s, 不批量)
  *
  * 追频 (Frequency Sweep): 从起始频率开始, 步进 +25kHz, 每次完整发射。
@@ -39,8 +39,7 @@ public:
   static const uint32_t DEFAULT_FREQ_MAX_KHZ  = 999999;  //!< 默认频率上限 (kHz, 规格 §9.4)
   static const uint32_t DEFAULT_ADDR_END      = 0x1FFFFF; //!< 默认地址上限 (POCSAG 21-bit)
   static const int      DEFAULT_INTERVAL_MS   = 500;     //!< 默认批次间隔 (ms, 规格 §7.3)
-  static const int    POCSAG_BATCH_SIZE = 55;           //!< POCSAG 每批地址数 (1 前导码 + 55×(地址+信息))
-  static const int    SUB_BATCH_SIZE    = 55;           //!< 子批次大小 (= 整批: 单次 sendPocsagRaw, 1 个前导码)
+  static const int    POCSAG_BATCH_SIZE = 55;           //!< POCSAG 每批地址数 (1 前导码连续流, ≤ MAX_BATCH 恒可编码)
   static const int    BATCH_GAP_MS      = 50;           //!< 批次间隔下限 (ms, 保证 WiFi/串口处理机会 + Si4463 状态恢复)
 
   /** 扫描配置 */
@@ -110,16 +109,13 @@ private:
   uint32_t m_origFreqKHz;   // 追频起始频率 (结束/停止时恢复)
   uint32_t m_nextTxMs;      // 下次发射时间戳 (millis)
 
-  // POCSAG 批内进度 (异步发射: 整批 16 地址可能跨多帧入队, 队列满时续传)
+  // POCSAG 批进度 (异步发射: 整批入队, 队列满时下帧重试)
   uint32_t m_batchBase = 0;  //!< 当前整批起始地址
   uint32_t m_batchSize = 0;  //!< 当前整批地址总数 (≤ POCSAG_BATCH_SIZE)
   uint32_t m_batchLeft = 0;  //!< 批内剩余未入队地址数
 
-  // 子批补发状态: encodeBatchMulti 跳过 (消息放不下) 的地址逐地址补发
-  uint32_t m_subAddrs[SUB_BATCH_SIZE];  //!< 当前子批地址
-  bool     m_subSkipped[SUB_BATCH_SIZE];//!< 子批内需逐地址补发的地址
-  int      m_subCount = 0;    //!< 当前子批地址数
-  int      m_subPending = 0;  //!< 子批内处理游标 (批量段已入队, 补发进行中)
+  // 整批地址缓冲 (encodeBatchMulti 输入; 一次入队整个批)
+  uint32_t m_batchAddrs[POCSAG_BATCH_SIZE];
 
   // POCSAG 批量编码器作为实例成员 (.bss), 消除函数内 static 非重入状态
   PocsagEncoder m_batchEncoder;

@@ -57,7 +57,7 @@ api_init() 默认配置 / Web/串口 API 动态设置
 
 ```
 Sweeper::loop() 由 main.cpp loop() 每帧调用 (非阻塞, 批次间 intervalMs 节流)
-  → txAddrBatch() [POCSAG]  PocsagEncoder::encodeBatch() (8 地址/组共享前导码)
+  → txAddrBatch() [POCSAG]  PocsagEncoder::encodeBatchMulti() (55 地址/批, 单前导码连续多 Batch, 消息跨 SYNC)
                             → Transmitter::sendPocsagRaw()
   → txAddrBatch() [FLEX]    FlexEncoder::encode() 逐地址
                             → Transmitter::sendFlexRaw()

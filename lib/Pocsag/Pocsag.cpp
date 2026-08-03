@@ -358,119 +358,16 @@ void PocsagEncoder::genSignal(unsigned long addr, int function,
 }
 
 // ============================================================================
-// 批量编码 — 多个地址共用一个前导码
-//
-// 帧结构 (规格 §4.2 + §13.1): 每组 = [SYNC] + 8 帧 × 2 码字。
-//   地址码字放在其 (addr & 0x07) 对应的帧槽 (POCSAG 标准帧号), 消息码字紧跟其后。
-//   连续递增的地址自然覆盖全部 8 帧, 每组最多 8 地址。
-//   组尾 (地址不足 8 的组) 用 IDLE 填充; 整批结束后补 16 个 IDLE。
-//
-// 消息约束: 批量路径仅支持 MODE_NUMERIC 且每条消息 ≤1 个消息码字 (≤5 位数字)。
-//   - ALPHANUMERIC: 纯数字串经 deCodeAlpha 会插入 \x0F/EOT 控制字符, 恒 ≥2 CW, 拒绝。
-//   - 数字 >5 位: 需 2 CW, 拒绝。
-//   被拒绝时返回 0, 由调用方降级逐地址发送 (规格 §13.1)。
-// ============================================================================
-
-int PocsagEncoder::encodeBatch(const uint32_t *addresses, int addrCount,
-                                int function, DisplayMode mode, bool invert,
-                                int *addrEncoded) {
-  m_bandLength = 0;
-  memset(m_baseband, 0, sizeof(m_baseband));
-  if (addrEncoded) *addrEncoded = 0;
-
-  if (!addresses || addrCount <= 0) return 0;
-
-  // 批量路径仅支持 NUMERIC 数字消息 (消息 = 地址十进制串)
-  if (mode != MODE_NUMERIC) return 0;
-
-  // ---- 0. 预检: 每条消息 ≤5 位数字 (1 CW); 组内帧号唯一 ----
-  for (int i = 0; i < addrCount; i++) {
-    if (addresses[i] > 99999) return 0;   // 6 位及以上需 2 CW
-  }
-  for (int g = 0; g < addrCount; g += 8) {
-    bool frameSeen[8] = {false};
-    int groupCount = addrCount - g;
-    if (groupCount > 8) groupCount = 8;
-    for (int i = 0; i < groupCount; i++) {
-      uint8_t frame = addresses[g + i] & 0x07;
-      if (frameSeen[frame]) return 0;     // 组内两地址同帧, 无法批量
-      frameSeen[frame] = true;
-    }
-  }
-
-  // ---- 1. 共享前导码 ----
-  genPreamble();
-  int bandPtr = 18;
-
-  // ---- 2. 按组拼装 (每组 [SYNC] + 8 帧, 8 地址共享一组) ----
-  int encoded = 0;
-  for (int i = 0; i < addrCount && bandPtr < MAX_BASEBAND - 18; i += 8) {
-    int groupCount = addrCount - i;
-    if (groupCount > 8) groupCount = 8;
-
-    m_baseband[bandPtr++] = POCSAG_SYNC;
-
-    // 先为组内每个地址生成消息码字, 按帧号存放
-    unsigned long addrWords[8] = {0};
-    unsigned long msgWords[8]  = {0};
-    bool frameUsed[8] = {false};
-    for (int g = 0; g < groupCount; g++) {
-      uint32_t addr = addresses[i + g];
-      uint8_t frame = addr & 0x07;
-      char addrStr[16];
-      snprintf(addrStr, sizeof(addrStr), "%lu", (unsigned long)addr);
-
-      // 复用 deCodeNumeric 的 BCD + SPACE 填充打包, 取第 1 个码字
-      deCodeNumeric((const uint8_t *)addrStr, strlen(addrStr));
-      msgWords[frame] = m_msgCode[0];
-      addrWords[frame] = genAddrCode(addr, function);
-      frameUsed[frame] = true;
-    }
-
-    // 按帧槽写入: 帧 f 槽 0 = 地址码字, 槽 1 = 消息码字
-    for (int slot = 0; slot < 16 && bandPtr < MAX_BASEBAND; slot++) {
-      int frame = slot / 2;
-      if (frameUsed[frame]) {
-        m_baseband[bandPtr++] =
-            (slot & 1) ? msgWords[frame] : addrWords[frame];
-      } else {
-        m_baseband[bandPtr++] = POCSAG_IDLE;
-      }
-    }
-
-    encoded += groupCount;
-  }
-
-  // ---- 3. 尾部填充 16 个空闲码字 ----
-  for (int i = 0; i < 16 && bandPtr < MAX_BASEBAND; i++) {
-    m_baseband[bandPtr++] = POCSAG_IDLE;
-  }
-
-  // ---- 5. 反相处理 ----
-  if (invert) {
-    for (int i = 0; i < bandPtr; i++) {
-      m_baseband[i] = ~m_baseband[i];
-    }
-  }
-
-  m_bandLength = bandPtr;
-  if (addrEncoded) *addrEncoded = encoded;
-  return bandPtr;
-}
-
-// ============================================================================
-// 批量打包 (追码): 每地址独立 batch, 消息任意长度/模式, 共享一个前导码
+// 批量打包 (追码): 单前导码连续多 Batch 调度
 //
 // 背景 (用户实测): 旧版 (44f9564) 每地址一个 batch + ALPHA 批量, 追码快
 // (~8s/16 地址); 30e65ae 改为 8 地址/批仅 NUMERIC, ALPHA 降级逐地址 (~22s)。
-// 本实现恢复旧版批量速度, 并修复旧版 frame 7 长消息截断的 bug:
-//   每地址 = [SYNC] + 16 帧槽, 地址码字放 (addr&7)*2 槽, 消息码字连续紧跟,
-//   剩余槽 IDLE。消息超过 batch 余量 (frame 7 + 长消息) 的地址跳过不编码,
-//   由调用方逐地址标准发射 (消息完整, 不截断)。
-//
-// 帧约束: 消息码字从地址槽后连续放置, 不跨 batch, 不占用后续地址槽。
-//   frame 0..6 放 ≤2 个消息码字 (≤5 位地址串) OK; frame 7 仅剩 1 槽,
-//   恒跳过 → 调用方逐地址补发。
+// 本实现 (升级): 1 个 Preamble 贯穿全程, 维护连续多 Batch 队列, 消息码字
+// 可跨 Sync 延伸到下一个 Batch (ITU-R M.584 §2.2), 不重新切前导码。
+//   每 Batch = [SYNC] + 16 帧槽; 地址码字放 (addr&7)*2 槽, 消息码字从其后
+//   连续放置; 跨 Batch 时下一 Batch 被占用的头部槽自动避让 (对应 frame 的
+//   地址顺延到更后的 Batch)。frame 7 长消息不再跳过, 全部地址进批量,
+//   彻底省去逐地址补发的前导码开销。
 // ============================================================================
 
 int PocsagEncoder::encodeBatchMulti(const uint32_t *addresses, int addrCount,
@@ -485,13 +382,27 @@ int PocsagEncoder::encodeBatchMulti(const uint32_t *addresses, int addrCount,
 
   // ---- 1. 共享前导码 ----
   genPreamble();
-  int bandPtr = 18;
+
+  // ---- 2. 跨 Batch 连续流布局 (贪心, 数值序) ----
+  // 每 Batch = SYNC + 16 槽 (17 CW), 地址槽 t=(addr&7)*2。
+  // 消息从 t+1 起连续 msgWords 槽, 可跨 SYNC; 跨入的槽不再放地址。
+  // batchStart[bi] = 该 Batch 的 SYNC 在 m_baseband 的位置;
+  // used[bi]       = 该 Batch 槽占用位图 (bit s = 槽 s 已占)。
+  // MAX_BATCH: 55 地址消息 2-4 CW → 贪心实测 ≤16 批, 24 留足余量。
+  enum { MAX_BATCH = 24, SLOTS = 16 };
+  int      batchStart[MAX_BATCH];
+  uint16_t used[MAX_BATCH];
+  int      batchCount = 0;
+  for (int i = 0; i < MAX_BATCH; i++) { batchStart[i] = 0; used[i] = 0; }
 
   int encoded = 0;
-  for (int i = 0; i < addrCount && bandPtr < MAX_BASEBAND - 34; i++) {
+  for (int i = 0; i < addrCount; i++) {
+    uint32_t a = addresses[i];
+    int t = (int)((a & 0x07) * 2);
+
     // 编码消息 = 地址十进制串 (与逐地址发射一致, 消息格式与功能码匹配)
     char addrStr[16];
-    snprintf(addrStr, sizeof(addrStr), "%lu", (unsigned long)addresses[i]);
+    snprintf(addrStr, sizeof(addrStr), "%lu", (unsigned long)a);
     size_t msgLen = strlen(addrStr);
 
     memset(m_msgCode, 0, sizeof(m_msgCode));
@@ -507,34 +418,67 @@ int PocsagEncoder::encodeBatchMulti(const uint32_t *addresses, int addrCount,
            m_msgCode[msgWords] != POCSAG_IDLE && m_msgCode[msgWords] != 0) {
       msgWords++;
     }
+    if (msgWords == 0) { if (skipped) skipped[i] = true; continue; }
 
-    // 地址帧槽; 消息从槽 1 开始连续放, 必须 ≤ batch 余量 (16 - addrSlot - 1)
-    uint8_t frameNum = addresses[i] & 0x07;
-    uint8_t addrSlot = frameNum * 2;
-    int room = 16 - (addrSlot + 1);
-    if (msgWords > room) {
-      if (skipped) skipped[i] = true;   // 放不下 → 调用方逐地址补发
-      continue;
-    }
-
-    // ---- 写入 SYNC + 16 帧 ----
-    m_baseband[bandPtr++] = POCSAG_SYNC;
-    unsigned long addrWord = genAddrCode(addresses[i], function);
-
-    int msgIdx = 0;
-    for (int slot = 0; slot < 16; slot++) {
-      if (slot == addrSlot) {
-        m_baseband[bandPtr++] = addrWord;
-      } else if (slot > addrSlot && msgIdx < msgWords) {
-        m_baseband[bandPtr++] = m_msgCode[msgIdx++];
-      } else {
-        m_baseband[bandPtr++] = POCSAG_IDLE;
+    // 找可放 Batch: 地址槽 t 空, 且消息 msgWords 个槽连续空 (可跨 Batch)
+    bool placed = false;
+    for (int bi = 0; bi <= batchCount; bi++) {
+      if (bi == batchCount) {
+        if (batchCount >= MAX_BATCH) break;
+        batchStart[batchCount] = 18 + batchCount * 17;
+        used[batchCount] = 0;
+        batchCount++;
       }
+      if (used[bi] & (uint16_t)(1 << t)) continue;
+
+      // 预检消息槽 (bb == batchCount 视为空; 放置时再分配)
+      int bb = bi, ss = t + 1;
+      bool ok = true;
+      for (int k = 0; k < msgWords; k++) {
+        if (ss >= SLOTS) { bb++; ss = 0; }
+        if (bb >= MAX_BATCH) { ok = false; break; }
+        if (bb < batchCount && (used[bb] & (uint16_t)(1 << ss))) { ok = false; break; }
+        ss++;
+      }
+      if (!ok) continue;
+
+      // 放置地址
+      used[bi] |= (uint16_t)(1 << t);
+      m_baseband[batchStart[bi] + 1 + t] = genAddrCode(a, function);
+
+      // 放置消息 (跨 Batch 时分配新 Batch)
+      bb = bi; ss = t + 1;
+      for (int k = 0; k < msgWords; k++) {
+        if (ss >= SLOTS) { bb++; ss = 0; }
+        if (bb >= batchCount) {
+          if (batchCount >= MAX_BATCH) { ok = false; break; }
+          batchStart[batchCount] = 18 + batchCount * 17;
+          used[batchCount] = 0;
+          batchCount++;
+        }
+        used[bb] |= (uint16_t)(1 << ss);
+        m_baseband[batchStart[bb] + 1 + ss] = m_msgCode[k];
+        ss++;
+      }
+      if (!ok) { if (skipped) skipped[i] = true; continue; }  // 理论不可达
+
+      encoded++;
+      placed = true;
+      break;
     }
-    encoded++;
+    if (!placed && skipped) skipped[i] = true;
   }
 
-  // ---- 2. 尾部填充 16 个空闲码字 ----
+  // ---- 3. 写 SYNC + IDLE 填充 (空槽), 尾部补 16 个 IDLE ----
+  int bandPtr = 18 + batchCount * 17;
+  for (int bi = 0; bi < batchCount; bi++) {
+    m_baseband[batchStart[bi]] = POCSAG_SYNC;
+    for (int ss = 0; ss < SLOTS; ss++) {
+      if (!(used[bi] & (uint16_t)(1 << ss))) {
+        m_baseband[batchStart[bi] + 1 + ss] = POCSAG_IDLE;
+      }
+    }
+  }
   for (int i = 0; i < 16 && bandPtr < MAX_BASEBAND; i++) {
     m_baseband[bandPtr++] = POCSAG_IDLE;
   }

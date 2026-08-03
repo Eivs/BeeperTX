@@ -118,9 +118,9 @@ private:
   };
 
   // Job 内嵌数据 (深拷贝), 调用方入队后即可复用其编码器缓冲。
-  // encodeBatchMulti 整批 55 地址 = 18 前导 + 55×17 + 16 尾 = 969 CW (1 个前导码)。
-  // ALPHA 下 frame-7 地址消息 ≥2 CW 放不下 → 逐地址补发 (单发自带前导码)。
-  static const int JOB_MAX_POCSAG_WORDS = 1024;  //!< 批量子批上限 (969) + 余量
+  // encodeBatchMulti 55 地址单前导连续流 = 18 前导 + ≤16 batch×17 + 16 尾 ≈ 306 CW,
+  // 远小于 JOB 上限。
+  static const int JOB_MAX_POCSAG_WORDS = 1024;  //!< 单 Job 码字上限 (55 地址批 ~306 + 余量)
   static const int JOB_MAX_FLEX_BYTES   = 800;  //!< FlexEncoder BUFFER_SIZE
 
   struct Job {

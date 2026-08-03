@@ -13,7 +13,7 @@
 // 缓冲区大小限制
 // ============================================================================
 #define MAX_CODEMORDS 512    // 最多消息码字数
-#define MAX_BASEBAND 1024    // 基带码字总数 (55 地址批 = 18 前导 + 55×17 + 16 尾 = 969)
+#define MAX_BASEBAND 1024    // 基带码字总数 (单前导连续流: 18 前导 + ≤24 batch×17 + 16 尾 ≤ 442)
 #define MAX_MESSAGE_LEN 1024 // 输入消息最大字节数
 
 // ============================================================================
@@ -48,40 +48,22 @@ public:
               bool invert = false);
 
   /**
-   * @brief 批量编码 — 多个地址共用一个前导码, 按规格帧结构拼接。
+   * @brief 追码批量打包 — 单前导码连续多 Batch 调度。
    *
-   * 帧结构 (规格 §4.2): 每组 = [SYNC] + 8 帧 × [Addr][Msg], 最多 8 地址共享一组。
-   * 地址放入其 (addr & 0x07) 对应的帧槽, 消息码字紧跟其后 (每组每地址 1 个消息 CW)。
+   * 1 个 Preamble 贯穿全程, 连续 N 个 Batch (ITU-R M.584 §2.2):
+   *   - 每 Batch = [SYNC] + 16 槽; 地址码字放 (addr & 0x07)*2 槽
+   *   - 消息码字从地址槽后连续放置, 可跨 SYNC 延伸到下一个 Batch
+   *   - 跨入的头部槽不再放地址, 对应 frame 的地址顺延到更后的 Batch
+   *   - 消息 = 地址十进制串 (与逐地址发射一致, 消息格式与功能码匹配)
    *
-   * @param addresses  地址数组 (需连续递增, 且每条消息必须 ≤1 个消息码字)
+   * @param addresses  地址数组 (任意顺序/条数, ≤21-bit)
    * @param addrCount  地址数量
    * @param function   2-bit 功能码 (0-3)
    * @param mode       消息编码方式 (NUMERIC=4-bit BCD, ALPHANUMERIC=7-bit ASCII)
    * @param invert     反相发射
-   * @param addrEncoded [out] 可选: 实际编码的地址数 (任一地址消息 >1 CW 时返回 0)
-   * @return 基带总码字数; 0 = 参数非法或消息超过 1 个码字 (调用方需降级逐地址发送)
-   */
-  int encodeBatch(const uint32_t *addresses, int addrCount,
-                  int function, DisplayMode mode, bool invert,
-                  int *addrEncoded = nullptr);
-
-  /**
-   * @brief 追码批量打包 — 任意消息长度/模式, 多条消息共享一个前导码。
-   *
-   * 每条消息 = 地址的十进制串 (与逐地址发射一致, 消息格式与功能码匹配)。
-   * greedy 多 batch 装填 (POCSAG 帧约束):
-   *   - 地址码字放 (addr & 0x07) 帧槽 0, 消息码字从槽 1 连续放置
-   *   - 消息码字不跨 batch 边界; 帧槽被占或消息跨 batch 的地址跳过不编码,
-   *     由调用方逐地址补发 (帧 7 + 长消息在任意批都放不下, 属正常跳过)。
-   *
-   * @param addresses  地址数组 (连续递增, 任意条数)
-   * @param addrCount  地址数量
-   * @param function   2-bit 功能码 (0-3)
-   * @param mode       消息编码方式 (NUMERIC=4-bit BCD, ALPHANUMERIC=7-bit ASCII)
-   * @param invert     反相发射
-   * @param addrEncoded [out] 可选: 成功批量编码的地址数
-   * @param skipped    [out] 可选: 长度 addrCount, 被跳过 (需逐地址补发) 的索引置 true
-   * @return 基带总码字数; 0 = 无任何地址可批量编码 (全需逐地址)
+   * @param addrEncoded [out] 可选: 成功编码的地址数
+   * @param skipped    [out] 可选: 长度 addrCount, 未编码 (超 MAX_BATCH/基带上限) 的索引置 true
+   * @return 基带总码字数; 0 = 无任何地址可编码
    */
   int encodeBatchMulti(const uint32_t *addresses, int addrCount,
                        int function, DisplayMode mode, bool invert,

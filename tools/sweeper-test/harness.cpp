@@ -117,7 +117,7 @@ int main() {
     check("完成后 running=false", !st.running);
   }
 
-  printf("== 场景 2: 6 位地址批量 + frame 7 补发 ==\n");
+  printf("== 场景 2: 6 位地址全批量 (frame 7 跨 batch, 无补发) ==\n");
   {
     g_millis = 0;
     g_rawPocsagCalls = 0;
@@ -128,9 +128,9 @@ int main() {
     Sweeper::Config c = addrCfg(100000, 100007);  // 8 步, 6 位数字消息 2 CW
     check("start 返回 0", sw.start(c) == 0);
     sw.loop();
-    // frame 0..6 (7 地址) 批量; frame 7 (100007) 消息 2 CW 放不下 → 补发
+    // 连续多 Batch 调度: frame 7 (100007) 消息跨 SYNC, 全部进批量
     check("6位地址批量: 1 次 sendPocsagRaw", g_rawPocsagCalls == 1);
-    check("6位 frame7 补发: 1 次 send", g_sendCalls == 1);
+    check("6位 frame7 无补发 send (0 次)", g_sendCalls == 0);
     check("done=8", sw.getStatus().done == 8);
     check("current=100008", sw.getStatus().current == 100008);
     g_sendCalls = 0;
@@ -269,7 +269,7 @@ int main() {
     g_millis = 0;
   }
 
-  printf("== 场景 9: ALPHANUMERIC 批量 + frame 7 补发 (消息格式与功能码匹配) ==\n");
+  printf("== 场景 9: ALPHANUMERIC 批量 (frame 7 跨 batch, 无补发) ==\n");
   {
     g_millis = 0;
     g_rawPocsagCalls = 0;
@@ -289,7 +289,7 @@ int main() {
     g_rawPocsagCalls = 0;
     g_sendCalls = 0;
 
-    // 帧 7 地址 (消息 2 CW 放不下) 逐地址补发 + 队列满续传
+    // 连续多 Batch 调度: frame 7 (1007) 消息跨 SYNC, 全部进批量 + 队列满续传
     Sweeper sw2;
     sw2.setTransmitter(&tx);
     Sweeper::Config c2 = addrCfg(1000, 1007);  // 8 步, 1007 是 frame 7
@@ -301,8 +301,8 @@ int main() {
     g_txQueueFull = false;
     g_millis += 600;
     sw2.loop();
-    check("ALPHA: 1 次批量 + 1 次 frame7 补发",
-          g_rawPocsagCalls == 1 && g_sendCalls == 1);
+    check("ALPHA: 1 次批量 + 0 次 frame7 补发",
+          g_rawPocsagCalls == 1 && g_sendCalls == 0);
     check("ALPHA: done=8", sw2.getStatus().done == 8);
     check("ALPHA: current=1008", sw2.getStatus().current == 1008);
     g_txQueueFull = false;
