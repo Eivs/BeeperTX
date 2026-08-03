@@ -19,6 +19,7 @@
 #include <SPI.h>
 #include <stdint.h>
 #include <string.h>
+#include "esp_task_wdt.h"
 
 // ------------------------------------------------------------------
 // Pin variables — initialised from config defaults, override at runtime
@@ -95,24 +96,32 @@ static volatile uint8_t enabledInterrupts[3];
 
 static volatile uint8_t isrState;
 static volatile uint8_t isrBusy;
+// 全局中断嵌套深度, 与 isrState (GPIO detach 计数) 完全独立。
+// 原实现两者共用 isrState: doAPI 内 irq_off 先置 isrState=1, ATOMIC 的
+// interrupt_on 减不到 0 而永不调 interrupts(), irq_on 只 reattach GPIO
+// 中断 → 每次 doAPI 后该核全局中断被永久禁用, esp_timer 冻结, 位敲击
+// 忙等卡死 → txTask WDT 复位。独立计数后 ATOMIC 每次正确配对恢复。
+static volatile uint8_t spiIntrState;
 
 // ------------------------------------------------------------------
 // Interrupt helpers for concurrent access protection
 // ------------------------------------------------------------------
 static inline uint8_t interrupt_off(void) {
-  if (!isrBusy) {
+  if (spiIntrState == 0) {
     noInterrupts();
-    isrState = isrState + 1;
+    spiIntrState = 1;
+  } else {
+    spiIntrState++;  // 嵌套: 仅计数, 不重复关
   }
   return 1;
 }
 
 static inline uint8_t interrupt_on(void) {
-  if (!isrBusy) {
-    if (isrState > 0)
-      isrState = isrState - 1;
-    if (isrState == 0)
-      interrupts();
+  if (spiIntrState > 1) {
+    spiIntrState--;  // 嵌套退出
+  } else if (spiIntrState == 1) {
+    spiIntrState = 0;
+    interrupts();
   }
   return 0;
 }
@@ -185,8 +194,15 @@ static uint8_t getResponse(void *buff, uint8_t len) {
 
 static uint8_t waitForResponse(void *out, uint8_t outLen, uint8_t useTimeout) {
   uint16_t timeout = 40000;
+  uint16_t wdtCnt = 0;
   while (!getResponse(out, outLen)) {
     delayMicroseconds(10);
+    // CTS 长时间不拉高时忙等累计可超 5s → 喂 Task WDT, 避免忙等本身触发复位
+    if (++wdtCnt >= 100) {  // ~1ms 一次
+      wdtCnt = 0;
+      if (!xPortInIsrContext())
+        esp_task_wdt_reset();
+    }
     if (useTimeout && !--timeout) {
       SI446X_CB_CMDTIMEOUT();
       return 0;

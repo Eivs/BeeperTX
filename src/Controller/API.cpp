@@ -129,7 +129,11 @@ private:
   TxConfig     m_config;
   DeviceStatus m_status;
   bool         m_statusCached = false;  //!< partId/romId/chipRev 已缓存 (静态信息)
+  uint32_t     m_statusLastQueryMs = 0; //!< 上次实时 SPI 查询时刻 (冷却限速)
   uint32_t     m_txCount = 0;
+
+  // 状态查询限速: 避免发射间隙/高频轮询对 Si4463 频繁发 SPI 命令
+  static const uint32_t STATUS_QUERY_MIN_INTERVAL_MS = 500;
 
   // ---- Handlers ----
   void handlePing(const CmdRequest* req, CmdResponse* resp);
@@ -188,13 +192,17 @@ void CommandDispatcher::handleGetStatus(const CmdRequest* req, CmdResponse* resp
   // Si4463 处于 Direct TX 时不响应多数命令, doAPI 会忙等到 CTS 超时
   // (每个查询最多 400ms), 持跨核锁阻塞 txTask → 发射停滞 + WDT 复位
   // (用户实测"追码自动停止"的根因)。
+  // 另: 非发射期也限速 (冷却窗口), 避免追码批间隙紧贴 Si4463 状态机
+  // 恢复窗口插入查询 (CTS 不响应 → 忙等), 同时缓解 webUI 高延时。
+  const uint32_t nowMs = millis();
   const bool txBusy = m_tx && m_tx->isBusy();
-  if (!txBusy) {
+  if (!txBusy && (nowMs - m_statusLastQueryMs >= STATUS_QUERY_MIN_INTERVAL_MS)) {
     m_status.state   = (uint8_t)Si446x_getState();
     m_status.freqKHz = Si446x_getFrequencyKHz();
     m_status.txPower = Si446x_getTxPower();
     m_status.rssiDbm = Si446x_getRSSI();
-  } else {
+    m_statusLastQueryMs = nowMs;
+  } else if (txBusy) {
     m_status.state   = SI446X_STATE_TX;  // 正在发射
     // freqKHz/txPower/rssi 保持上次缓存值 (发射中 RSSI 无意义)
   }

@@ -373,13 +373,6 @@ body.terminal {
 }
 
 /* ---- Sweep Controls ---- */
-#group-sweep {
-  border-color: var(--accent);
-}
-#group-sweep legend {
-  color: var(--accent);
-}
-
 .sweep-status {
   font-family: var(--font-mono);
   font-size: 11px;

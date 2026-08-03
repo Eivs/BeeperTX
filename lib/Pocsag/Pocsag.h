@@ -13,7 +13,7 @@
 // 缓冲区大小限制
 // ============================================================================
 #define MAX_CODEMORDS 512    // 最多消息码字数
-#define MAX_BASEBAND 768     // 基带码字总数
+#define MAX_BASEBAND 1024    // 基带码字总数 (55 地址批 = 18 前导 + 55×17 + 16 尾 = 969)
 #define MAX_MESSAGE_LEN 1024 // 输入消息最大字节数
 
 // ============================================================================
@@ -64,6 +64,28 @@ public:
   int encodeBatch(const uint32_t *addresses, int addrCount,
                   int function, DisplayMode mode, bool invert,
                   int *addrEncoded = nullptr);
+
+  /**
+   * @brief 追码批量打包 — 任意消息长度/模式, 多条消息共享一个前导码。
+   *
+   * 每条消息 = 地址的十进制串 (与逐地址发射一致, 消息格式与功能码匹配)。
+   * greedy 多 batch 装填 (POCSAG 帧约束):
+   *   - 地址码字放 (addr & 0x07) 帧槽 0, 消息码字从槽 1 连续放置
+   *   - 消息码字不跨 batch 边界; 帧槽被占或消息跨 batch 的地址跳过不编码,
+   *     由调用方逐地址补发 (帧 7 + 长消息在任意批都放不下, 属正常跳过)。
+   *
+   * @param addresses  地址数组 (连续递增, 任意条数)
+   * @param addrCount  地址数量
+   * @param function   2-bit 功能码 (0-3)
+   * @param mode       消息编码方式 (NUMERIC=4-bit BCD, ALPHANUMERIC=7-bit ASCII)
+   * @param invert     反相发射
+   * @param addrEncoded [out] 可选: 成功批量编码的地址数
+   * @param skipped    [out] 可选: 长度 addrCount, 被跳过 (需逐地址补发) 的索引置 true
+   * @return 基带总码字数; 0 = 无任何地址可批量编码 (全需逐地址)
+   */
+  int encodeBatchMulti(const uint32_t *addresses, int addrCount,
+                       int function, DisplayMode mode, bool invert,
+                       int *addrEncoded = nullptr, bool *skipped = nullptr);
 
   /** @return 基带码字缓冲区指针 */
   const unsigned long *getBaseband() const { return m_baseband; }

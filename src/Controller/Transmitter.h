@@ -62,7 +62,7 @@ public:
   /**
    * @brief 直接发送已编码的 POCSAG 基带码字数组 (已含前导码)。
    *        一次 enterTx→send→exitTx, 不做额外编码/反相。
-   *        供 Sweeper 批量追码使用 (PocsagEncoder::encodeBatch 输出),
+   *        供 Sweeper 批量追码使用 (PocsagEncoder::encodeBatchMulti 输出),
    *        反相已由编码器处理。Job 深拷贝, 返回后 baseband 可复用。
    * @return true=已入队 (异步执行), false=队列满或码字超上限
    */
@@ -118,7 +118,9 @@ private:
   };
 
   // Job 内嵌数据 (深拷贝), 调用方入队后即可复用其编码器缓冲。
-  static const int JOB_MAX_POCSAG_WORDS = 128;  //!< 8 地址子批+前导码 ≈35 码字, 余量充足
+  // encodeBatchMulti 整批 55 地址 = 18 前导 + 55×17 + 16 尾 = 969 CW (1 个前导码)。
+  // ALPHA 下 frame-7 地址消息 ≥2 CW 放不下 → 逐地址补发 (单发自带前导码)。
+  static const int JOB_MAX_POCSAG_WORDS = 1024;  //!< 批量子批上限 (969) + 余量
   static const int JOB_MAX_FLEX_BYTES   = 800;  //!< FlexEncoder BUFFER_SIZE
 
   struct Job {

@@ -17,7 +17,7 @@ bool Transmitter::ensureTask() {
   if (!m_queue) return false;
   // core 1: 位敲击独占该核不被抢占 (与 loopTask 原同核, 但业务
   // loop 已迁至 core 0); core 0 (WiFi/AsyncTCP/Web) 完全不受影响。
-  if (xTaskCreatePinnedToCore(txTaskEntry, "txTask", 4096, this, 3, &m_task, 1) != pdPASS) {
+  if (xTaskCreatePinnedToCore(txTaskEntry, "txTask", 8192, this, 3, &m_task, 1) != pdPASS) {
     vQueueDelete(m_queue);
     m_queue = nullptr;
     return false;
@@ -71,6 +71,7 @@ void Transmitter::feedWatchdog() {
 // ============================================================
 static const int PREAMBLE_BITS  = 576;   // POCSAG 标准前导码
 static const int TX_SETTLE_MS   = 2;  // Direct TX PLL 锁定等待 (Si4463 典型 200µs, 2ms 含 10 倍余量)
+static const int SI446X_TX_RECOVER_MS = 20; //!< stopTX 后芯片状态机/锁相环收敛时间 (防连续发射 CTS 不响应)
 
 // ============================================================
 // 构造 / 析构
@@ -113,11 +114,26 @@ void Transmitter::enterTx() {
 
 void Transmitter::exitTx() {
   Si446x_stopTX();
+  // 等芯片从 Direct TX 收敛到 IDLE, 防连续发射 (enterTx→exitTx→enterTx)
+  // 间隔过短时 CTS 持续不响应 → doAPI 忙等超时累积
+  delay(SI446X_TX_RECOVER_MS);
 }
 
 // ============================================================
 // 低层位流发送 (忙等待, 精确时序)
 // ============================================================
+
+// 忙等到指定时刻 (esp_timer 微秒)。若该核中断被意外禁用导致
+// esp_timer 冻结, 用 CPU cycle counter (与中断无关) 检测并恢复中断自救。
+static inline void busyWaitUntil(uint64_t next) {
+  uint32_t cycMark = esp_cpu_get_ccount();
+  while (esp_timer_get_time() < next) {
+    if ((uint32_t)(esp_cpu_get_ccount() - cycMark) > 2400000UL) {  // ~10ms @240MHz
+      cycMark = esp_cpu_get_ccount();
+      portENABLE_INTERRUPTS();
+    }
+  }
+}
 
 /**
  * 发送 POCSAG 前导码: 交替 1/0 模式.
@@ -133,9 +149,8 @@ void Transmitter::sendPreambleBits(int bits, int bitTimeUs, bool invert) {
     if (invert) bit = 1 - bit;    // 反相
     digitalWrite(m_txPin, bit ? HIGH : LOW);
     next += bitTimeUs;
-    while (esp_timer_get_time() < next) {}
-    // 每 500 位喂一次看门狗, 防止长帧触发 WDT (喂 loopTask, 因发射任务抢占它)
-    if (++wdtCnt >= 500) { wdtCnt = 0; feedWatchdog(); }
+    busyWaitUntil(next);
+    if (++wdtCnt >= 500) { wdtCnt = 0; feedWatchdog(); }  // 每 500 bit 喂一次 WDT
   }
 }
 
@@ -152,9 +167,9 @@ void Transmitter::sendCodewords(const unsigned long* cw, int count, int bitTimeU
     for (int bit = 31; bit >= 0; bit--) {
       digitalWrite(m_txPin, ((word >> bit) & 1) ? HIGH : LOW);
       next += bitTimeUs;
-      while (esp_timer_get_time() < next) {}
+      busyWaitUntil(next);
+      if (++wdtCnt >= 500) { wdtCnt = 0; feedWatchdog(); }  // 每 500 bit 喂一次 WDT
     }
-    if (++wdtCnt >= 500) { wdtCnt = 0; feedWatchdog(); }
   }
 }
 
@@ -170,9 +185,9 @@ void Transmitter::sendBytes(const uint8_t* data, size_t len, int bitTimeUs) {
     for (int bit = 7; bit >= 0; bit--) {
       digitalWrite(m_txPin, ((byte >> bit) & 1) ? HIGH : LOW);
       next += bitTimeUs;
-      while (esp_timer_get_time() < next) {}
+      busyWaitUntil(next);
+      if (++wdtCnt >= 500) { wdtCnt = 0; feedWatchdog(); }  // 每 500 bit
     }
-    if (++wdtCnt >= 500) { wdtCnt = 0; feedWatchdog(); }
   }
 }
 

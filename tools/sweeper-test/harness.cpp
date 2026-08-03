@@ -31,7 +31,9 @@ bool Transmitter::send(const Config& cfg) {
   g_sendCalls++;
   return true;
 }
-bool Transmitter::sendPocsagRaw(const unsigned long*, int, int) {
+bool Transmitter::sendPocsagRaw(const unsigned long* bb, int wordCount, int) {
+  // 与真机一致: 超 JOB_MAX_POCSAG_WORDS=1024 拒绝 (回归: 128 上限拒掉 170 CW 批量)
+  if (!bb || wordCount <= 0 || wordCount > 1024) return false;
   if (g_txQueueFull) return false;
   g_rawPocsagCalls++;
   return true;
@@ -95,12 +97,12 @@ int main() {
     check("done 初始 0", st.done == 0);
     check("running", st.running);
 
-    // 第一次 loop: 立即执行, 16 地址 (2 子批 × 8) 批量发送
+    // 第一次 loop: 立即执行, 17 地址整批 (1 前导码, 单次入队) 批量发送
     sw.loop();
     st = sw.getStatus();
-    check("批量后 done=16", st.done == 16);
-    check("current=1016", st.current == 1016);
-    check("2 次 sendPocsagRaw (2 子批)", g_rawPocsagCalls == 2);
+    check("批量后 done=17", st.done == 17);
+    check("current=1017", st.current == 1017);
+    check("1 次 sendPocsagRaw (整批 1 前导码)", g_rawPocsagCalls == 1);
 
     // 间隔节流: 未到 intervalMs 不执行
     int doneBefore = st.done;
@@ -115,16 +117,22 @@ int main() {
     check("完成后 running=false", !st.running);
   }
 
-  printf("== 场景 2: 6 位地址降级逐地址 ==\n");
+  printf("== 场景 2: 6 位地址批量 + frame 7 补发 ==\n");
   {
+    g_millis = 0;
+    g_rawPocsagCalls = 0;
+    g_sendCalls = 0;
     Sweeper sw;
     Transmitter tx;
     sw.setTransmitter(&tx);
-    Sweeper::Config c = addrCfg(100000, 100002);  // 3 步, 均 >5 位
+    Sweeper::Config c = addrCfg(100000, 100007);  // 8 步, 6 位数字消息 2 CW
     check("start 返回 0", sw.start(c) == 0);
     sw.loop();
-    check("降级走 send (3 次)", g_sendCalls == 3);
-    check("done=3", sw.getStatus().done == 3);
+    // frame 0..6 (7 地址) 批量; frame 7 (100007) 消息 2 CW 放不下 → 补发
+    check("6位地址批量: 1 次 sendPocsagRaw", g_rawPocsagCalls == 1);
+    check("6位 frame7 补发: 1 次 send", g_sendCalls == 1);
+    check("done=8", sw.getStatus().done == 8);
+    check("current=100008", sw.getStatus().current == 100008);
     g_sendCalls = 0;
   }
 
@@ -200,8 +208,8 @@ int main() {
 
     g_txBusy = false;  // 发射完成, 队列空闲
     sw.loop();
-    check("空闲后整批 done=16", sw.getStatus().done == 16);
-    check("空闲后 2 子批入队", g_rawPocsagCalls == 2);
+    check("空闲后整批 done=17", sw.getStatus().done == 17);
+    check("空闲后 1 次入队", g_rawPocsagCalls == 1);
     g_txBusy = false;
   }
 
@@ -224,8 +232,8 @@ int main() {
     g_txQueueFull = false;
     g_millis += 600;       // 越过节流时间
     sw.loop();
-    check("续传后整批 done=16", sw.getStatus().done == 16);
-    check("续传后 current=1016", sw.getStatus().current == 1016);
+    check("续传后整批 done=17", sw.getStatus().done == 17);
+    check("续传后 current=1017", sw.getStatus().current == 1017);
     g_txQueueFull = false;
     g_millis = 0;
   }
@@ -257,6 +265,46 @@ int main() {
     sw.loop();  // 发 5001 → 完成
     check("FLEX 完成后 done=2", sw.getStatus().done == 2);
     check("FLEX 完成后 running=false", !sw.getStatus().running);
+    g_txQueueFull = false;
+    g_millis = 0;
+  }
+
+  printf("== 场景 9: ALPHANUMERIC 批量 + frame 7 补发 (消息格式与功能码匹配) ==\n");
+  {
+    g_millis = 0;
+    g_rawPocsagCalls = 0;
+    g_sendCalls = 0;
+    Sweeper sw;
+    Transmitter tx;
+    sw.setTransmitter(&tx);
+    Sweeper::Config c = addrCfg(1000, 1003);  // 4 步, 帧 0..3
+    c.msgType = MsgType::ALPHANUMERIC;        // 默认: 字母消息
+    sw.start(c);
+
+    sw.loop();
+    check("ALPHA: 走批量 sendPocsagRaw (1 次)", g_rawPocsagCalls == 1);
+    check("ALPHA: 帧0-3 无补发 send (0 次)", g_sendCalls == 0);
+    check("ALPHA: done=4", sw.getStatus().done == 4);
+    check("ALPHA: current=1004", sw.getStatus().current == 1004);
+    g_rawPocsagCalls = 0;
+    g_sendCalls = 0;
+
+    // 帧 7 地址 (消息 2 CW 放不下) 逐地址补发 + 队列满续传
+    Sweeper sw2;
+    sw2.setTransmitter(&tx);
+    Sweeper::Config c2 = addrCfg(1000, 1007);  // 8 步, 1007 是 frame 7
+    c2.msgType = MsgType::ALPHANUMERIC;
+    sw2.start(c2);
+    g_txQueueFull = true;
+    sw2.loop();
+    check("ALPHA 队列满: 批量段未入队 done=0", sw2.getStatus().done == 0);
+    g_txQueueFull = false;
+    g_millis += 600;
+    sw2.loop();
+    check("ALPHA: 1 次批量 + 1 次 frame7 补发",
+          g_rawPocsagCalls == 1 && g_sendCalls == 1);
+    check("ALPHA: done=8", sw2.getStatus().done == 8);
+    check("ALPHA: current=1008", sw2.getStatus().current == 1008);
     g_txQueueFull = false;
     g_millis = 0;
   }

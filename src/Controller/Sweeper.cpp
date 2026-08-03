@@ -172,10 +172,14 @@ void Sweeper::sweepStep() {
 // ============================================================
 void Sweeper::txAddrBatch() {
   if (m_cfg.encoding == EncodingType::POCSAG) {
-    // ---- POCSAG 批量 (POCSAG_BATCH_SIZE 地址/批, 共享一个前导码; 8 地址/组) ----
-    // 消息 = 地址数字串, 固定 NUMERIC 编码 (规格 §1.2 纯数字消息)。
-    // 批量仅支持 ≤5 位数字 (1 CW) 且批内帧号不冲突; 否则降级逐地址标准发射。
-    // 异步: send* 仅入队 (深拷贝) 即返回, 队列满时保留批内进度, 下帧续传。
+    // ---- POCSAG 批量 ----
+    // 消息格式必须与功能码匹配 (POCSAG 标准): 寻呼机按功能码解码消息,
+    // 字母功能码 (A/B/C) 收到 BCD 数字消息时按字母解 → 控制字符 → 空消息
+    // (用户实测"追码收到空消息"根因)。encodeBatchMulti 按用户 msgType 编码
+    // (NUMERIC=BCD / ALPHANUMERIC=ASCII), 消息 = 地址十进制串, 每条消息
+    // 独立 batch 共享前导码 (恢复旧版批量速度); 消息放不下 batch 的地址
+    // (frame 7 + 长消息) 跳过, 由下方逐地址标准发射补发 (与单发一致)。
+
     if (m_batchLeft == 0) {
       m_batchBase = m_current;
       m_batchSize = 0;
@@ -193,83 +197,85 @@ void Sweeper::txAddrBatch() {
 
     PocsagEncoder& encoder = m_batchEncoder;
     bool invert = (m_cfg.phase == PhaseType::NORMAL);
+    DisplayMode dm = (m_cfg.msgType == MsgType::NUMERIC)
+                         ? MODE_NUMERIC : MODE_ALPHANUMERIC;
 
-    bool degraded = false;
     while (m_batchLeft > 0) {
       if (m_mode == IDLE) return;  // STOP 响应
 
+      // 子批内补发进行中: 批量段已入队, 逐个补发 skipped 地址 (队列满暂停)
+      if (m_subPending < m_subCount) {
+        uint32_t addr = m_subAddrs[m_subPending];
+        if (m_subSkipped[m_subPending]) {
+          Transmitter::Config cfg;
+          cfg.encoding = EncodingType::POCSAG;
+          cfg.phase    = m_cfg.phase;
+          cfg.tone     = m_cfg.tone;
+          cfg.baudRate = m_cfg.baudRate;
+          cfg.address  = addr;
+          cfg.msgType  = m_cfg.msgType;
+          snprintf(cfg.message, sizeof(cfg.message), "%lu",
+                   (unsigned long)addr);
+          if (!m_tx->send(cfg)) return;  // 队列满: 下帧续传 (游标未推进)
+
+          char logLine[128];
+          snprintf(logLine, sizeof(logLine),
+                   "SWEEP addr=%lu POCSAG (batch skip)", (unsigned long)addr);
+          api_log(logLine);
+          Serial.print('.');
+        }
+        m_subPending++;
+        m_batchLeft--;
+        m_done++;
+        continue;
+      }
+
+      // 取新子批: 当前批内剩余地址
       int sub = (m_batchLeft > SUB_BATCH_SIZE) ? SUB_BATCH_SIZE : (int)m_batchLeft;
-      // 当前子批地址: 批起始 + (本批总数 - 剩余数)
-      uint32_t addrs[SUB_BATCH_SIZE];
       uint32_t batchStart = m_batchBase + (m_batchSize - m_batchLeft);
-      for (int i = 0; i < sub; i++) addrs[i] = batchStart + i;
+      for (int i = 0; i < sub; i++) {
+        m_subAddrs[i] = batchStart + i;
+        m_subSkipped[i] = false;
+      }
+      m_subCount = sub;
+      m_subPending = 0;
 
       int addrEncoded = 0;
-      int words = encoder.encodeBatch(addrs, sub,
-                                      static_cast<int>(m_cfg.tone),  // 库边界: Pocsag 用 int 功能码
-                                      MODE_NUMERIC, invert, &addrEncoded);
+      int words = encoder.encodeBatchMulti(m_subAddrs, sub,
+                                           static_cast<int>(m_cfg.tone), dm,
+                                           invert, &addrEncoded, m_subSkipped);
 
-      if (words > 0 && addrEncoded == sub) {
-        // 批量发射成功 (异步入队)
+      if (words > 0) {
+        // 批量段入队 (异步入队); 队列满: 丢弃子批状态, 下帧整子批重试
+        // (若保留 m_subCount/m_subPending, 下帧会误走补发分支跳过批量段)
         if (!m_tx->sendPocsagRaw(encoder.getBaseband(), words, m_cfg.baudRate)) {
-          return;  // 队列满: 批内进度保留, 下帧续传
+          m_subCount = 0;
+          m_subPending = 0;
+          return;
         }
         char logLine[128];
         snprintf(logLine, sizeof(logLine),
-                 "SWEEP addr batch: %lu-%lu (%d addrs) POCSAG",
-                 (unsigned long)addrs[0],
-                 (unsigned long)addrs[sub - 1], sub);
+                 "SWEEP addr batch: %lu-%lu (%d/%d addrs) POCSAG",
+                 (unsigned long)m_subAddrs[0],
+                 (unsigned long)m_subAddrs[sub - 1],
+                 addrEncoded, sub);
         api_log(logLine);
 
         Serial.print('.');
         Serial.println(F(" OK"));
-
-        m_batchLeft -= sub;
-        m_done += sub;
-      } else {
-        degraded = true;
-        break;
       }
+      // words == 0: 全部地址被跳过 (如整子批都是 frame 7), 直接逐地址补发。
+      // 注意: m_subPending 保持 0, 下次循环进入补发分支逐个 send。
     }
 
-    if (degraded && m_batchLeft > 0) {
-      // 降级: 消息 >5 位或帧冲突, 逐地址标准发射 (支持任意位数/字母模式)。
-      // 连续入队 (深拷贝) 直到队列满, 余量下帧续传。
-      while (m_batchLeft > 0) {
-        if (m_mode == IDLE) return;  // STOP 响应
-
-        uint32_t addr = m_batchBase + (m_batchSize - m_batchLeft);
-        Transmitter::Config cfg;
-        cfg.encoding = EncodingType::POCSAG;
-        cfg.phase    = m_cfg.phase;
-        cfg.tone     = m_cfg.tone;
-        cfg.baudRate = m_cfg.baudRate;
-        cfg.address  = addr;
-        cfg.msgType  = m_cfg.msgType;
-        snprintf(cfg.message, sizeof(cfg.message), "%lu",
-                 (unsigned long)addr);
-
-        if (!m_tx->send(cfg)) return;  // 队列满: 下帧续传
-
-        char logLine[128];
-        snprintf(logLine, sizeof(logLine),
-                 "SWEEP addr=%lu POCSAG deg", (unsigned long)addr);
-        api_log(logLine);
-
-        Serial.print('.');
-        m_batchLeft--;
-        m_done++;
-      }
-    }
-
-    if (m_batchLeft == 0) {
-      m_current = m_batchBase + m_batchSize;
-      m_batchBase = 0;
-      m_batchSize = 0;
-      if (isAddrMax()) {
-        api_log("SWEEP addr complete");
-        stop();
-      }
+    m_current = m_batchBase + m_batchSize;
+    m_batchBase = 0;
+    m_batchSize = 0;
+    m_subCount = 0;
+    m_subPending = 0;
+    if (isAddrMax()) {
+      api_log("SWEEP addr complete");
+      stop();
     }
 
   } else {

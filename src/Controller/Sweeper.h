@@ -39,9 +39,9 @@ public:
   static const uint32_t DEFAULT_FREQ_MAX_KHZ  = 999999;  //!< 默认频率上限 (kHz, 规格 §9.4)
   static const uint32_t DEFAULT_ADDR_END      = 0x1FFFFF; //!< 默认地址上限 (POCSAG 21-bit)
   static const int      DEFAULT_INTERVAL_MS   = 500;     //!< 默认批次间隔 (ms, 规格 §7.3)
-  static const int    POCSAG_BATCH_SIZE = 16;           //!< POCSAG 每批地址数 (2 组 × 8, 共享前导码)
-  static const int    SUB_BATCH_SIZE    = 8;            //!< 子批次大小 (在此粒度检查 STOP)
-  static const int    BATCH_GAP_MS      = 10;           //!< 批次间隔下限 (ms, 保证 WiFi/串口处理机会)
+  static const int    POCSAG_BATCH_SIZE = 55;           //!< POCSAG 每批地址数 (1 前导码 + 55×(地址+信息))
+  static const int    SUB_BATCH_SIZE    = 55;           //!< 子批次大小 (= 整批: 单次 sendPocsagRaw, 1 个前导码)
+  static const int    BATCH_GAP_MS      = 50;           //!< 批次间隔下限 (ms, 保证 WiFi/串口处理机会 + Si4463 状态恢复)
 
   /** 扫描配置 */
   struct Config {
@@ -114,6 +114,12 @@ private:
   uint32_t m_batchBase = 0;  //!< 当前整批起始地址
   uint32_t m_batchSize = 0;  //!< 当前整批地址总数 (≤ POCSAG_BATCH_SIZE)
   uint32_t m_batchLeft = 0;  //!< 批内剩余未入队地址数
+
+  // 子批补发状态: encodeBatchMulti 跳过 (消息放不下) 的地址逐地址补发
+  uint32_t m_subAddrs[SUB_BATCH_SIZE];  //!< 当前子批地址
+  bool     m_subSkipped[SUB_BATCH_SIZE];//!< 子批内需逐地址补发的地址
+  int      m_subCount = 0;    //!< 当前子批地址数
+  int      m_subPending = 0;  //!< 子批内处理游标 (批量段已入队, 补发进行中)
 
   // POCSAG 批量编码器作为实例成员 (.bss), 消除函数内 static 非重入状态
   PocsagEncoder m_batchEncoder;
