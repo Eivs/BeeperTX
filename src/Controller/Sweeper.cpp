@@ -240,7 +240,11 @@ void Sweeper::txAddrBatch() {
     }
 
   } else {
-    // ---- FLEX 逐地址发射 (规格 §5.2: FLEX 每批 1 地址, 帧长 ~1.9s, 不批量) ----
+    // ---- FLEX 批量 (追码优化): 一次 ERS + 连续多帧 (frame=0), 帧内多地址多消息 ----
+    // v1 仅短地址 (capcode 1..1933312, 7 位内), 消息 = 地址十进制串。
+    // 55 地址 ALPHA 批 ≈ ERS 420 B + 4 帧×375 B = 1920 B, 一次入队,
+    // 对比旧逐地址 (每地址 ERS+1 帧 ≈ 4.0 s) 提速 ~23×。
+    // 非短地址 (或编码失败) 退化为逐地址发射, 避免卡死。
     if (m_mode == IDLE) return;  // STOP 响应
 
     uint32_t addr = m_current;
@@ -250,30 +254,65 @@ void Sweeper::txAddrBatch() {
       return;
     }
 
-    char msg[16];
-    snprintf(msg, sizeof(msg), "%lu", (unsigned long)addr);
+    // 组装连续短地址子批 (遇非短地址 / 超上限即停)
+    size_t n = 0;
+    uint32_t a = addr;
+    while (n < (size_t)FLEX_BATCH_SIZE && a <= m_cfg.addrEnd &&
+           FlexEncoder::isShortCapcode(a)) {
+      snprintf(m_flexMsgText[n], sizeof(m_flexMsgText[n]), "%lu",
+               (unsigned long)a);
+      m_flexBatch[n].capcode = a;
+      m_flexBatch[n].msg     = m_flexMsgText[n];
+      m_flexBatch[n].type    = (m_cfg.msgType == MsgType::NUMERIC)
+                                   ? FlexEncoder::NUMERIC : FlexEncoder::ALPHA;
+      n++;
+      a++;
+    }
 
-    FlexEncoder encoder;
-    FlexEncoder::MsgType mt = (m_cfg.msgType == MsgType::NUMERIC)
-                                  ? FlexEncoder::NUMERIC : FlexEncoder::ALPHA;
-    size_t len = encoder.encode(addr, msg, mt);
+    if (n == 0) {
+      // 非短地址 (超出 FLEX 短地址域): 逐地址发射, 编码失败也推进
+      char msg[16];
+      snprintf(msg, sizeof(msg), "%lu", (unsigned long)addr);
+      FlexEncoder::MsgType mt = (m_cfg.msgType == MsgType::NUMERIC)
+                                    ? FlexEncoder::NUMERIC : FlexEncoder::ALPHA;
+      size_t len = m_flexEncoder.encode(addr, msg, mt);
+      if (len > 0 && !m_flexEncoder.hasError()) {
+        bool invert = (m_cfg.phase == PhaseType::NORMAL);
+        if (!m_tx->sendFlexRaw(m_flexEncoder.getData(), len, m_cfg.baudRate,
+                               invert)) {
+          return;  // 队列满: 下帧重试 (m_current 未推进)
+        }
+        m_done++;
+        m_current = addr + 1;
+      } else {
+        m_current = addr + 1;
+      }
+      if (isAddrMax()) {
+        api_log("SWEEP addr complete");
+        stop();
+      }
+      return;
+    }
 
-    if (len > 0 && !encoder.hasError()) {
+    size_t encoded = 0;
+    size_t len = m_flexEncoder.encodeBatch(m_flexBatch, n, &encoded);
+    if (len > 0 && !m_flexEncoder.hasError() && encoded > 0) {
       char logLine[128];
-      snprintf(logLine, sizeof(logLine),
-               "SWEEP addr=%lu FLEX", (unsigned long)addr);
+      snprintf(logLine, sizeof(logLine), "SWEEP addr=%lu..%lu FLEX batch",
+               (unsigned long)addr, (unsigned long)(addr + encoded - 1));
       api_log(logLine);
 
       Serial.print('.');
       bool invert = (m_cfg.phase == PhaseType::NORMAL);
-      if (!m_tx->sendFlexRaw(encoder.getData(), len, m_cfg.baudRate, invert)) {
+      if (!m_tx->sendFlexRaw(m_flexEncoder.getData(), len, m_cfg.baudRate,
+                             invert)) {
         return;  // 队列满: 下帧重试 (m_current 未推进)
       }
       Serial.println(F(" OK"));
-      m_done++;
-      m_current = addr + 1;
+      m_done += (uint32_t)encoded;
+      m_current = addr + (uint32_t)encoded;
     } else {
-      // 编码失败也前进, 避免卡死 (异步下无法即时重试)
+      // 编码失败 (理论不可达: 短消息恒可编码): 防御推进, 避免卡死
       m_current = addr + 1;
     }
 

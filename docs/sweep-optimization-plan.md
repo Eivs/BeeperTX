@@ -39,7 +39,8 @@
 | D1 | 地址上限采用 POCSAG 21-bit 硬上限 `0x1FFFFF`（2,097,151），规格 §3.1 的 `addrEnd=9999999` 超出地址空间，判定为规格笔误。`Config` 增加 `addrEnd` 字段，默认 `0x1FFFFF`，可配置 | POCSAG 地址码字只有 21 bit；`genAddrCode` 使用 `addr >>= 3` 装入 18 bit，物理不可达 9999999 |
 | D2 | 批量编码仅支持 ≤1-CW 消息（≤5 位数字）；6–7 位地址自动降级为逐地址发送（batchSize=1 语义）。规格 §13.1 已提供降级机制 | `deCodeNumeric` 每码字 20 bit = 5 位 BCD；2-CW 消息会侵占相邻地址帧槽（c2 根因） |
 | D3 | `POCSAG_BATCH_SIZE` 由 50 改为 **16**（= 2 组 × 8 地址，共享 1 个前导码），`SUB_BATCH_SIZE=8` 保留作 STOP 检查粒度；组内结构严格按规格 §4.2 | 50 非 8 的倍数且超出 `MAX_BASEBAND` 容量（s4）；16 地址/批 ≈ 6.75 地址/s，与规格 §11.1 估算一致 |
-| D4 | `FLEX_BATCH_SIZE` 由 15 改为 **1**（规格 §5.2 明确 FLEX 每批 1 地址；flex.h 不支持拼接，§5.1） | 消除单批约 28 s 忙等待阻塞（s3）；header 注释"帧拼接"本就是不实描述 |
+| D4 | `FLEX_BATCH_SIZE` 曾由 15 改为 **1**（规格 §5.2 旧读法；flex.h 原不支持拼接） | 消除单批约 28 s 忙等待阻塞（s3） |
+| D4' | **2026-08 修订**: FLEX 批量支持重新实现。flex.h 新增 `tf_encode_flex_batch()`: 一次 ERS + 连续多帧, 每帧 frame=0, 帧内多地址多向量多消息 (BIW s_vfield 动态计算)。v1 仅短地址; `FLEX_BATCH_SIZE = 55` (55 地址 ALPHA 批 ≈ ERS 420 B + 4 帧×375 B = 1920 B) | ARIB STD-43A §3.4: transmission 共享一次 ERS, 每帧自带 S1+FIW+S2; §3.7/§3.9 帧内多地址/向量/消息为标准能力。55 地址 ALPHA 批 ~9.6 s, 对比逐地址 (55×4.0 s) 提速 ~23× |
 | D5 | 频率上限 `freqMaxKHz` 默认 **999999**（规格 §9.4 与附录 A），保留硬件 clamp（Si4463 上限约 1050 MHz） | 999.999 MHz 在硬件能力内 |
 | D6 | `Sweeper` 从 `lib/Sweeper/` 移至 **`src/Controller/Sweeper.{h,cpp}`** | CLAUDE.md「项目架构」四层约定优先于规格 §12.1 的路径（规格路径即分层违规）；控制层依赖 Transmitter/API 属正常 |
 | D7 | `intervalMs`（默认 500）作为**批次间**节流；子批次间保留 `BATCH_GAP_MS=10` 让出 WiFi/串口（规格 §13.2 缓解） | 规格 §7.3：POCSAG 300–500 ms，FLEX/追频 500–1000 ms |
@@ -112,7 +113,7 @@
    - 保留 `Transmitter::sendPocsagRaw/sendFlexRaw` 作为**正式扩展**，更新注释说明用途（Sweeper 批量/预编码路径）；invert 处理统一由这两个方法负责，Sweeper 不再自行反相
    - `sendPocsagRaw` 补前导码说明：`encodeBatch` 输出已含 preamble，调用方不重复加
    - 移除 `Sweeper::Config.txPower` 死字段（`Transmitter::Config` 无此字段，赋值无效）
-3. **FLEX 批次收敛（s3，决策 D4）**：`FLEX_BATCH_SIZE = 15 → 1`；`txAddrBatch()` FLEX 分支删去 `for i < FLEX_BATCH_SIZE` 循环，改为单地址发射 + 节流（决策 D7）；header 注释删除"帧拼接"不实描述
+3. **FLEX 批次收敛（s3，决策 D4 → D4' 修订）**：2026-07 曾将 `FLEX_BATCH_SIZE = 15 → 1`（逐地址）以消除忙等待。**2026-08 重新支持批量**：flex.h 新增 `tf_encode_flex_batch()`（一次 ERS + 连续多帧 frame=0 + 帧内多地址多消息，v1 短地址）；`FLEX_BATCH_SIZE = 55`；`txAddrBatch()` FLEX 分支整批编码一次 `sendFlexRaw`，非短地址退化逐地址；`JOB_MAX_FLEX_BYTES 800 → 2048`（union 尺寸不变）
 4. **追频切频归属**：`txFreqOnce()` 的 `Si446x_setFrequencyKHz()` 调用在移入 `src/Controller` 后合规（控制层依赖驱动层），保留
 
 **文档引用**：CLAUDE.md「项目架构」（四层）、「关键数据流」（`Transmitter::send` 统一入口）、规格 §5.2（FLEX 每批 1 地址）、§6.1（追频切频）。

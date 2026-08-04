@@ -121,7 +121,7 @@ private:
   // encodeBatchMulti 55 地址单前导连续流 = 18 前导 + ≤16 batch×17 + 16 尾 ≈ 306 CW,
   // 远小于 JOB 上限。
   static const int JOB_MAX_POCSAG_WORDS = 1024;  //!< 单 Job 码字上限 (55 地址批 ~306 + 余量)
-  static const int JOB_MAX_FLEX_BYTES   = 800;  //!< FlexEncoder BUFFER_SIZE
+  static const int JOB_MAX_FLEX_BYTES   = 2048;  //!< FLEX 单 Job 字节上限 (55 地址 ALPHA 批 ≈ 1920 B)
 
   struct Job {
     JobType type;

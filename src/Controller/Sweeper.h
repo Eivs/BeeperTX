@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include "Pocsag.h"
 #include "ProtocolTypes.h"
+#include "FlexEncoder.h"
 
 // 前向声明
 class Transmitter;
@@ -13,7 +14,7 @@ class Transmitter;
  *
  * 追码 (Address Sweep): 从起始地址开始, 步进 +1。
  *   POCSAG: 每批 55 地址, 单前导码连续多 Batch (消息跨 SYNC), 整批一次入队
- *   FLEX:   逐地址发射 (帧长 ~1.9s, 不批量)
+ *   FLEX:   每批 55 地址, 一次 ERS + 连续多帧 (frame=0) 多地址多消息, 整批一次入队
  *
  * 追频 (Frequency Sweep): 从起始频率开始, 步进 +25kHz, 每次完整发射。
  *   到达频率上限后自动停止, 并把频率恢复为起始值。
@@ -40,6 +41,7 @@ public:
   static const uint32_t DEFAULT_ADDR_END      = 0x1FFFFF; //!< 默认地址上限 (POCSAG 21-bit)
   static const int      DEFAULT_INTERVAL_MS   = 500;     //!< 默认批次间隔 (ms, 规格 §7.3)
   static const int    POCSAG_BATCH_SIZE = 55;           //!< POCSAG 每批地址数 (1 前导码连续流, ≤ MAX_BATCH 恒可编码)
+  static const int    FLEX_BATCH_SIZE   = 55;           //!< FLEX 每批地址数 (一次 ERS 连续多帧; 55×6 字 ≤ 4 帧×87 字, 恒可编码)
   static const int    BATCH_GAP_MS      = 50;           //!< 批次间隔下限 (ms, 保证 WiFi/串口处理机会 + Si4463 状态恢复)
 
   /** 扫描配置 */
@@ -120,13 +122,18 @@ private:
   // POCSAG 批量编码器作为实例成员 (.bss), 消除函数内 static 非重入状态
   PocsagEncoder m_batchEncoder;
 
+  // FLEX 批量缓冲 (encodeBatch 输入; 一次入队整个批)
+  FlexEncoder m_flexEncoder;                            //!< FLEX 批量编码器 (实例成员, 含 2KB 输出缓冲)
+  FlexEncoder::BatchMsg m_flexBatch[FLEX_BATCH_SIZE];   //!< FLEX 批量消息描述
+  char m_flexMsgText[FLEX_BATCH_SIZE][16];              //!< 地址十进制串缓冲 (≤7 位 + NUL)
+
   /** 计算总步数 (规格 §7.2) */
   bool calcTotalSteps();
 
   /** 执行一步扫描发射 */
   void sweepStep();
 
-  /** 追码: 批量发送 (POCSAG 16/批, FLEX 逐地址) */
+  /** 追码: 批量发送 (POCSAG/FLEX 各 55 地址/批) */
   void txAddrBatch();
 
   /** 追频: 单次发射 */

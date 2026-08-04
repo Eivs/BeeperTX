@@ -742,7 +742,7 @@ BeeperTX started
    字母消息使用 func=3 中文模式，两种模式不可混用。
 5. **FLEX 不支持 GB2312 非中文字符**: GB2312 编码中，中文区域为 0xA1-0xF7(首字节)
    和 0xA1-0xFE(次字节)。非汉字区 (如日文假名、俄文字母) 未测试。
-6. **单帧 FLEX**: 当前只发送单帧消息 (frame 0)，不涉及跨帧拼接。
+6. **单帧 FLEX (单发)**: 单条消息仍只发单帧 (frame 0)。追码批量 (`FlexEncoder::encodeBatch`) 支持一次 ERS + 连续多帧 (每帧 frame=0), 帧内多地址多消息, v1 仅短地址。
 7. **异步发射**: `CMD_TRANSMIT` 采用延迟执行模式——发射请求由 `api_dispatch()` 设置标志位，
    实际的 `Transmitter::send()` 在 `setup()` 之后的 `loop()` 中由 `api_loop()` 调度执行，
    避免阻塞 AsyncWebServer 的事件循环。
