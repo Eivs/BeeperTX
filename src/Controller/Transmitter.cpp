@@ -30,14 +30,21 @@ void Transmitter::txTaskEntry(void* arg) {
 }
 
 void Transmitter::txTaskMain() {
-  // 注册到 Task WDT: 发射期间 txTask 独占 core 1 (抢占 loopTask),
-  // loopTask 的 WDT 订阅已在 main.cpp setup() 中移除; 本任务接管
-  // "长发射不触发复位" 的喂狗职责, 同时保留系统级安全网
-  // (txTask 卡死时 WDT 仍会复位系统)。
-  esp_task_wdt_add(NULL);
-
   Job job;
-  while (xQueueReceive(m_queue, &job, portMAX_DELAY)) {
+  for (;;) {
+    if (!xQueueReceive(m_queue, &job, portMAX_DELAY)) continue;
+
+    // 仅在发射期间订阅 Task WDT: 位敲击独占 core 1 (抢占 loopTask),
+    // loopTask 的 WDT 订阅已在 main.cpp setup() 中移除; 本任务接管
+    // "长发射不触发复位" 的喂狗职责 (feedWatchdog 每 500 bit 喂一次),
+    // 同时保留发射卡死时的系统级安全网。
+    //
+    // 注意: ESP-IDF TWDT 对被订阅任务不区分运行/阻塞态 — 只要超过
+    // timeout (5s) 未调用 esp_task_wdt_reset() 即判超时复位。若空闲
+    // 阻塞在空队列时仍保持订阅, 停止发射 (如追码 STOP) 后队列排空,
+    // txTask 永远阻塞 → ~5s 后 WDT 复位 (实测复现)。因此发射结束、
+    // 进入阻塞前必须先注销, 下一个 Job 到达时再重新订阅。
+    esp_task_wdt_add(NULL);
     m_txActive = true;  // isBusy 门控: 发射期间让 Sweeper 暂停发起下一批
     switch (job.type) {
       case JobType::POCSAG:     sendPocsag(job.cfg); break;
@@ -45,6 +52,7 @@ void Transmitter::txTaskMain() {
       case JobType::RAW_FLEX:   sendFlexRawImpl(job.flex.data, job.flex.len, job.baudRate, job.invert); break;
     }
     m_txActive = false;
+    esp_task_wdt_delete(NULL);
   }
 }
 
