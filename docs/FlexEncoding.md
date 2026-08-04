@@ -183,8 +183,7 @@ Bit:  20..17    16..14   13..7   6..4   3..0
 ```
 
 Tone-only 消息不携带文本，仅触发寻呼机的提示音（可配置不同铃音类型）。
-在 `Transmitter::sendFlex()` 中通过 `cfg.msgType == TONE_ONLY` 触发，
-调用 `FlexEncoder::encode(addr, "", FlexEncoder::TONE_ONLY)`。
+在 `Transmitter::send()` 中编码并提交到 `sendFlexRaw()` 异步发射。
 
 #### 3.8 Message Field — 消息字段
 

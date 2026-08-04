@@ -96,7 +96,7 @@ Sweeper::loop() 由 main.cpp loop() 每帧调用 (非阻塞, 批次间 intervalM
 2. GB2312 字节经 `& 0x7F` 剥离 bit 7 后放入 7-bit 字段 (每字 3 字符)
 3. 通过 `\x0E`(SO)/`\x0F`(SI) 控制字符切换中英文模式 (与 POCSAG 同机制)
 4. 寻呼机默认中文模式, 每两字节配对重组为 GB2312 字符
-5. 中英混排时自动插入控制字符 (在 `Transmitter::sendFlex()` 中实现)
+5. 中英混排时自动插入控制字符 (在 `Transmitter::send()` 中实现)
 
 ### Transmitter 控制层 (src/Controller/)
 
@@ -104,7 +104,7 @@ Sweeper::loop() 由 main.cpp loop() 每帧调用 (非阻塞, 批次间 intervalM
 - `Transmitter::Config` 结构体包含全部发射参数: encoding, phase, baudRate, tone, address, message, msgType
 - `Transmitter::send(Config)` — 统一入口, 自动选择编码器
 - `Transmitter::bitTimeUs(baudRate)` — 码率→位时间查表 (512/1200/1600/2400/3200/6400)
-- FLEX 中文路径在 `sendFlex()` 中完成 GB2312 转换 + 控制字符注入
+- FLEX 编码 + GB2312 转换在 `send()` 内完成 (编码后走 `sendFlexRaw` 异步发射)
 - POCSAG 中文路径在 `deCodeAlpha()` 中完成控制字符注入
 - `main.cpp` 只负责硬件初始化和组件编排, 无发射逻辑；发射配置在 `API.cpp` 的 `api_init()` 中设置
 

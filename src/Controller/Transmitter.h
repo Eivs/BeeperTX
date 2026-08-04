@@ -83,6 +83,15 @@ public:
    */
   bool isBusy() const;
 
+  /**
+   * @brief 中断当前发射: 清空队列 + 使 sendBytes/sendCodewords 尽早 exitTx。
+   *        由 Sweeper::stop() 调用, 实现秒级停发。
+   */
+  void abortTx();
+
+  /** @brief 清除中断标志 (Sweeper::start / 单次 send 调用) */
+  void clearAbort() { m_abort = false; }
+
   // ---- 静态工具 ----
 
   /** 码率 → 位时间 (µs) */
@@ -138,6 +147,7 @@ private:
   QueueHandle_t m_queue = nullptr;   //!< 任务队列 (深度 3)
   TaskHandle_t  m_task  = nullptr;   //!< txTask 句柄
   volatile bool m_txActive = false;  //!< txTask 正在发射 (isBusy 门控用, 跨核 volatile)
+  volatile bool m_abort    = false;  //!< 发射中断标志 (Sweeper STOP → sendBytes 尽早退出)
 
   bool ensureTask();                       //!< 懒创建队列/任务 (失败返回 false)
   static void txTaskEntry(void* arg);
@@ -160,5 +170,4 @@ private:
 
   // ---- 协议调度 ----
   void sendPocsag(const Config& cfg);
-  void sendFlex(const Config& cfg);
 };

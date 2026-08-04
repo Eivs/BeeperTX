@@ -51,6 +51,7 @@ int Sweeper::start(const Config& cfg) {
   m_batchLeft = 0;
   m_origFreqKHz = (cfg.mode == FREQ_SWEEP) ? cfg.freqStartKHz : 0;
   m_nextTxMs  = millis();  // 立即开始第一轮
+  m_tx->clearAbort();      // 清除上次 STOP 遗留的中断标志
 
   if (!calcTotalSteps()) {
     m_mode = IDLE;
@@ -64,6 +65,7 @@ void Sweeper::stop() {
   if (m_mode == IDLE) return;
   restoreFreqIfNeeded();
   m_mode = IDLE;
+  if (m_tx) m_tx->abortTx();  // 中断当前发射 (半字节精度的秒级停发)
 }
 
 // ============================================================
@@ -259,8 +261,16 @@ void Sweeper::txAddrBatch() {
     uint32_t a = addr;
     while (n < (size_t)FLEX_BATCH_SIZE && a <= m_cfg.addrEnd &&
            FlexEncoder::isShortCapcode(a)) {
-      snprintf(m_flexMsgText[n], sizeof(m_flexMsgText[n]), "%lu",
-               (unsigned long)a);
+      // FLEX ALPHA: prepend SI (0x0F) to switch Chinese pagers from
+      // default GB2312 mode to ASCII mode, so address digits display
+      // correctly instead of garbage like "撤背".
+      if (m_cfg.msgType != MsgType::NUMERIC) {
+        m_flexMsgText[n][0] = '\x0F';
+        snprintf(m_flexMsgText[n] + 1, 15, "%lu", (unsigned long)a);
+      } else {
+        snprintf(m_flexMsgText[n], sizeof(m_flexMsgText[n]), "%lu",
+                 (unsigned long)a);
+      }
       m_flexBatch[n].capcode = a;
       m_flexBatch[n].msg     = m_flexMsgText[n];
       m_flexBatch[n].type    = (m_cfg.msgType == MsgType::NUMERIC)
@@ -272,7 +282,12 @@ void Sweeper::txAddrBatch() {
     if (n == 0) {
       // 非短地址 (超出 FLEX 短地址域): 逐地址发射, 编码失败也推进
       char msg[16];
-      snprintf(msg, sizeof(msg), "%lu", (unsigned long)addr);
+      if (m_cfg.msgType != MsgType::NUMERIC) {
+        msg[0] = '\x0F';
+        snprintf(msg + 1, 15, "%lu", (unsigned long)addr);
+      } else {
+        snprintf(msg, sizeof(msg), "%lu", (unsigned long)addr);
+      }
       FlexEncoder::MsgType mt = (m_cfg.msgType == MsgType::NUMERIC)
                                     ? FlexEncoder::NUMERIC : FlexEncoder::ALPHA;
       size_t len = m_flexEncoder.encode(addr, msg, mt);

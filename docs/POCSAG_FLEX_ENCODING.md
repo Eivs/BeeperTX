@@ -48,7 +48,7 @@ Transmitter::send(Config)
   │               ├─ sendCodewords()     → 32-bit 码字序列 (GPIO0)
   │               └─ exitTx()            → Si446x_stopTX()
   │
-  └─[FLEX]─────► Transmitter::sendFlex()
+  └─[FLEX]─────► Transmitter::send() (编码后经 sendFlexRaw 异步发射)
                   │
                   ├─ GB.get(msg)         → UTF-8 → GB2312
                   ├─ 控制字符注入         → \x0E/\x0F 切中英文
@@ -561,7 +561,7 @@ dst[i] = (src[0].bit[31-i] << 7) |
    输出: [0xBC,0xF2, 0xCC,0xE5, 0xD6,0xD0, 0xCE,0xC4,
           0x20, 0x41, 0x43, 0x42, 0x20, 0x31, 0x32, 0x33]
 
-2. 控制字符注入 (Transmitter::sendFlex):
+2. 控制字符注入 (Transmitter::send):
 
    inChinese=true (默认中文)
    0xBC (≥0x80, inChinese=true) → 直接写入
@@ -675,7 +675,7 @@ for each byte:
 insert EOT at end
 ```
 
-**FLEX 路径** (在 `Transmitter::sendFlex()` 内):
+**FLEX 路径** (在 `Transmitter::send()` 内):
 
 ```cpp
 bool inChinese = true;  // 寻呼机默认中文模式

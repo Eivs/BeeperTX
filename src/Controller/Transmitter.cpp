@@ -56,6 +56,14 @@ void Transmitter::txTaskMain() {
   }
 }
 
+void Transmitter::abortTx() {
+  m_abort = true;
+  // 排空队列 — 中止 flag 会使 txTask 的 send*Impl 立即返回,
+  // 不排空的话 txTask 在 µs 内消耗完积压, 队列变空 → isBusy 变 false
+  // → Sweeper::loop 继续塞下一批 → 追码停不下来。
+  if (m_queue) xQueueReset(m_queue);
+}
+
 bool Transmitter::enqueue(Job& job) {
   // 非阻塞入队 (深拷贝)。队列满返回 false, 调用方下帧重试。
   if (!ensureTask()) return false;
@@ -153,6 +161,7 @@ void Transmitter::sendPreambleBits(int bits, int bitTimeUs, bool invert) {
   uint64_t next = esp_timer_get_time();
   int wdtCnt = 0;
   for (int i = 0; i < bits; i++) {
+    if (m_abort) return;
     int bit = (i & 1) ? 0 : 1;   // 正相
     if (invert) bit = 1 - bit;    // 反相
     digitalWrite(m_txPin, bit ? HIGH : LOW);
@@ -170,6 +179,7 @@ void Transmitter::sendCodewords(const unsigned long* cw, int count, int bitTimeU
   uint64_t next = esp_timer_get_time();
   int wdtCnt = 0;
   for (int i = 0; i < count; i++) {
+    if (m_abort) return;
     unsigned long word = cw[i];
     if (word == 0) break;
     for (int bit = 31; bit >= 0; bit--) {
@@ -189,6 +199,7 @@ void Transmitter::sendBytes(const uint8_t* data, size_t len, int bitTimeUs) {
   uint64_t next = esp_timer_get_time();
   int wdtCnt = 0;
   for (size_t i = 0; i < len; i++) {
+    if (m_abort) return;  // Sweeper STOP → 中断位流发射
     uint8_t byte = data[i];
     for (int bit = 7; bit >= 0; bit--) {
       digitalWrite(m_txPin, ((byte >> bit) & 1) ? HIGH : LOW);
@@ -203,6 +214,7 @@ void Transmitter::sendBytes(const uint8_t* data, size_t len, int bitTimeUs) {
 // POCSAG 发射
 // ============================================================
 void Transmitter::sendPocsag(const Config& cfg) {
+  if (m_abort) return;
   // 编码器为实例成员 (.bss), 不占任务栈; 非重入问题已消除。
   PocsagEncoder& encoder = m_pocsagEncoder;
   // Si4463 的 FSK MARK/SPACE 极性与寻呼机解调器预期相反,
@@ -247,93 +259,50 @@ void Transmitter::sendPocsag(const Config& cfg) {
 }
 
 // ============================================================
-// FLEX 发射
-// ============================================================
-void Transmitter::sendFlex(const Config& cfg) {
-  FlexEncoder encoder;
-  // Si4463 FSK 极性补偿: NORMAL = 反转基带
-  bool invert = (cfg.phase == PhaseType::NORMAL);
-  int bt = bitTimeUs(cfg.baudRate);
-  size_t len;
-
-  bool isNum = (cfg.msgType == MsgType::NUMERIC);
-  if (isNum) {
-    len = encoder.encode(cfg.address, cfg.message, FlexEncoder::NUMERIC);
-  } else {
-    // 中文寻呼机: UTF-8 → GB2312 → FLEX Alphanumeric (V=101)
-    // GB2312 字节经 & 0x7F 剥离 bit 7 后放入 7-bit 字段,
-    // 寻呼机固件默认中文模式，每两字节重组为 GB2312 字符。
-    //
-    // 对于中英混排消息，用 \x0E(SI)/\x0F(SO) 控制字符切换:
-    //   \x0E — 进入中文模式 (Shift Out, 两字节配对)
-    //   \x0F — 进入英文模式 (Shift In,  单字节 ASCII)
-    // 寻呼机默认中文模式，与 POCSAG 的 deCodeAlpha() 一致。
-    uint8_t* mixed = m_flexMixed;   // 实例成员, 非 static (重入安全)
-    String gbStr = GB.get(String(cfg.message));
-    size_t gbLen = gbStr.length();
-
-    size_t m = 0;
-    bool inChinese = true;  // 默认中文模式
-    for (size_t i = 0; i < gbLen && m < sizeof(m_flexMixed) - 8; i++) {
-      uint8_t byte = (uint8_t)gbStr[i];  // 直接索引 String, 无拷贝
-      if (byte >= 0x80) {
-        // GB2312 中文字节
-        if (!inChinese) {
-          mixed[m++] = 0x0E;  // 切到中文
-          inChinese = true;
-        }
-        mixed[m++] = byte;
-      } else {
-        // ASCII 字节
-        if (inChinese) {
-          mixed[m++] = 0x0F;  // 切到英文
-          inChinese = false;
-        }
-        mixed[m++] = byte;
-      }
-    }
-    mixed[m] = '\0';
-    len = encoder.encode(cfg.address, (const char *)mixed, FlexEncoder::ALPHA);
-  }
-
-  const char* modeName = isNum ? "NUM" : "ALPHA(CN)";
-  const char* phaseName = (cfg.phase == PhaseType::INVERTED) ? "INV" : "NRM";
-  Serial.printf("TX[%d][FLEX] addr=%llu baud=%d %s %s \"%s\"\n",
-                m_txCount, cfg.address, cfg.baudRate,
-                modeName, phaseName, cfg.message);
-
-  if (encoder.hasError()) {
-    Serial.printf("  encode error: %s\n", encoder.getErrorString());
-    m_txCount++;
-    return;
-  }
-
-  Serial.print('.');
-  enterTx();
-  if (invert) {
-    // 反相: 复制缓冲区并逐字节取反, 然后走 sendBytes 精确时序
-    uint8_t* invBuf = (uint8_t*)malloc(len);
-    if (invBuf) {
-      const uint8_t* src = encoder.getData();
-      for (size_t i = 0; i < len; i++) invBuf[i] = ~src[i];
-      sendBytes(invBuf, len, bt);
-      free(invBuf);
-    } else {
-      // malloc 失败, 直接发正相
-      sendBytes(encoder.getData(), len, bt);
-    }
-  } else {
-    sendBytes(encoder.getData(), len, bt);
-  }
-  exitTx();
-  Serial.println(" OK");
-  m_txCount++;
-}
-
-// ============================================================
 // 公开 API — 统一入口 (非阻塞入队, 由 txTask 异步执行)
 // ============================================================
 bool Transmitter::send(const Config& cfg) {
+  // FLEX: 编码后通过 RAW_FLEX 路径提交 (与 Sweeper 同路径, txTask 异步发射)
+  if (cfg.encoding == EncodingType::FLEX) {
+    clearAbort();  // 单次发射: 清除追码 STOP 留下的中断标志
+    FlexEncoder encoder;
+    size_t len = 0;
+    bool isNum = (cfg.msgType == MsgType::NUMERIC);
+
+    if (isNum) {
+      len = encoder.encode(cfg.address, cfg.message, FlexEncoder::NUMERIC);
+    } else {
+      // 中文寻呼机: UTF-8 → GB2312 + 中英混排控制字符
+      uint8_t* mixed = m_flexMixed;
+      String gbStr = GB.get(String(cfg.message));
+      size_t gbLen = gbStr.length();
+      size_t m = 0;
+      bool inChinese = true;
+      for (size_t i = 0; i < gbLen && m < sizeof(m_flexMixed) - 8; i++) {
+        uint8_t byte = (uint8_t)gbStr[i];
+        if (byte >= 0x80) {
+          if (!inChinese) { mixed[m++] = 0x0E; inChinese = true; }
+          mixed[m++] = byte;
+        } else {
+          if (inChinese) { mixed[m++] = 0x0F; inChinese = false; }
+          mixed[m++] = byte;
+        }
+      }
+      mixed[m] = '\0';
+      len = encoder.encode(cfg.address, (const char*)mixed, FlexEncoder::ALPHA);
+    }
+
+    if (encoder.hasError()) {
+      Serial.printf("FLEX encode error: %s\n", encoder.getErrorString());
+      m_txCount++;
+      return false;
+    }
+    bool invert = (cfg.phase == PhaseType::NORMAL);
+    return sendFlexRaw(encoder.getData(), len, cfg.baudRate, invert);
+  }
+
+  // POCSAG
+  clearAbort();  // 清除追码 STOP 遗留的中断标志
   Job job;
   job.type = JobType::POCSAG;
   job.cfg  = cfg;  // 深拷贝 (含 message[256])
@@ -369,6 +338,7 @@ bool Transmitter::sendFlexRaw(const uint8_t* data, size_t len,
 // ---- 任务侧实际发送实现 (原逻辑, 在 txTask 上下文执行) ----
 void Transmitter::sendPocsagRawImpl(const unsigned long* baseband, int wordCount,
                                      int baudRate) {
+  if (m_abort) return;  // 追码 STOP 后队列残余 Job: 跳过 enterTx/exitTx
   int bt = bitTimeUs(baudRate);
   enterTx();
   sendCodewords(baseband, wordCount, bt);
@@ -377,7 +347,11 @@ void Transmitter::sendPocsagRawImpl(const unsigned long* baseband, int wordCount
 
 void Transmitter::sendFlexRawImpl(const uint8_t* data, size_t len,
                                    int baudRate, bool invert) {
+  if (m_abort) return;  // 追码 STOP 后队列残余 Job: 跳过 enterTx/exitTx
   int bt = bitTimeUs(baudRate);
+  Serial.printf("TX[%d][FLEX] len=%u baud=%d %s\n",
+                m_txCount, (unsigned)len, baudRate, invert ? "INV" : "NRM");
+  Serial.print('.');
   enterTx();
   if (invert) {
     uint8_t* invBuf = (uint8_t*)malloc(len);
@@ -386,11 +360,16 @@ void Transmitter::sendFlexRawImpl(const uint8_t* data, size_t len,
       sendBytes(invBuf, len, bt);
       free(invBuf);
     } else {
-      // malloc 失败, 直接发正相
       sendBytes(data, len, bt);
     }
   } else {
     sendBytes(data, len, bt);
   }
   exitTx();
+  if (m_abort) {
+    Serial.println(" ABORTED");
+  } else {
+    Serial.println(" OK");
+    m_txCount++;
+  }
 }

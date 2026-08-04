@@ -594,7 +594,7 @@ GB2312 字节流:  BC F2 CC E5 D6 D0 CE C4 20 41 42 43 20 31 32 33
   0F 20 41 42 43 20 31 32 33 → 切英文: " ABC 123" (单字节 ASCII)
 ```
 
-在 `sendFlex()` 中实现:
+在 `Transmitter::send()` 中实现:
 
 ```cpp
 static uint8_t mixed[512];
@@ -673,7 +673,7 @@ encoder.encode(cfg.address, (const char*)mixed, FlexEncoder::ALPHA);
 | 数字模式 | func=0, 4-bit BCD | V=011 Numeric |
 | 字母模式 | func=2/3, 7-bit ASCII | V=101 Alphanumeric |
 | 中文方式 | func=3 + `\x0E`/`\x0F` | V=101 alpha + `\x0E`/`\x0F` |
-| 编码器 | Pocsag::deCodeAlpha/Numeric | FlexEncoder + sendFlex() |
+| 编码器 | Pocsag::deCodeAlpha/Numeric | FlexEncoder (send 内编码, sendFlexRaw 异步发射) |
 | 调制 | 直接 FSK (GPIO0 bit-bang) | 直接 FSK (GPIO0 bit-bang) |
 | 缓冲区 | 静态 (`.bss` 段) | 静态 (`.bss` 段) |
 
