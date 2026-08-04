@@ -9,13 +9,26 @@ class FlexEncoder {
 public:
   enum MsgType { ALPHA = 0, NUMERIC = 1, TONE_ONLY = 2 };
 
+  struct BatchMsg {
+    uint64_t capcode;
+    const char* msg;
+    MsgType type;
+  };
+
   size_t encode(uint64_t capcode, const char* msg, MsgType type = ALPHA) {
     (void)capcode; (void)msg; (void)type;
-    m_buf[0] = 0xAA;  // 返回 1 字节, 使 Sweeper 判定 len>0 且无错误
+    m_buf[0] = 0xAA;
+    return 1;
+  }
+  size_t encodeBatch(const BatchMsg*, size_t count, size_t* encoded) {
+    if (encoded) *encoded = count;
+    m_buf[0] = 0xAA;
     return 1;
   }
   bool hasError() const { return false; }
   const uint8_t* getData() const { return m_buf; }
+
+  static bool isShortCapcode(uint64_t c) { return c >= 1 && c <= 1933312; }
 
 private:
   uint8_t m_buf[8];

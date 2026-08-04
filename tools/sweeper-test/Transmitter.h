@@ -25,6 +25,7 @@ public:
   bool sendPocsagRaw(const unsigned long* baseband, int wordCount, int baudRate);
   bool sendFlexRaw(const uint8_t* data, size_t len, int baudRate, bool invert);
 
-  /** 门控查询: 模拟 txTask 忙 (发射中/队列积压), 由 harness 全局控制 */
   bool isBusy() const;
+  void abortTx() {}
+  void clearAbort() {}
 };

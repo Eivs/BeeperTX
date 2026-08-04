@@ -74,10 +74,11 @@ src/main.cpp                         组装层: 硬件初始化和组件编排
       → Transmitter::send(Config)          // 统一入口, 自动路由编码器
         → [POCSAG] PocsagEncoder::encode() + GB.get() GB2312
         → [FLEX]   FlexEncoder::encode()  + GB.get() GB2312
-      → Transmitter::enterTx()            // Si446x_startDirectTX()
-      → [POCSAG] sendPreambleBits() + sendCodewords()  // GPIO0 bit-banging
-      → [FLEX]   sendBytes()                              // GPIO0 bit-banging
-      → Transmitter::exitTx()             // Si446x_stopTX()
+      → sendPocsagRaw() / sendFlexRaw()      // 深拷贝入队
+  → txTask (core 1) 异步发射:
+      → Transmitter::enterTx()               // Si446x_startDirectTX()
+      → sendCodewords() / sendBytes()        // GPIO0 bit-banging
+      → Transmitter::exitTx()                // Si446x_stopTX()
   → CmdResponse → 序列化返回
   → Si4463 直接 FSK 调制发射 (Direct TX Mode, 非 FIFO)
 ```
@@ -732,8 +733,9 @@ BeeperTX started
 
 ## 已知限制
 
-1. **忙等待时序**: `Transmitter` 的位流发送使用 `while (esp_timer_get_time() < next)` 忙等待，
-   约 1–2s 阻塞，可能触发 WDT。代码中每 500 位 `esp_task_wdt_reset()` 一次。
+1. **忙等待时序**: txTask (core 1) 位敲击期间使用 `busyWaitUntil()` 忙等待实现 µs 级精确时序，
+   约 1–2s (POCSAG) 或 ~10s (FLEX 批量)。代码中每 500 bit `esp_task_wdt_reset()` 喂狗。
+   Sweeper 为非阻塞状态机 (`loop()` 不持有忙等待)，仅 txTask 独占 core 1 发射。
 2. **POCSAG 中文默认模式**: `deCodeAlpha()` 硬编码寻呼机默认中文模式 (`inGB = true`, func=3)，
    纯 ASCII 消息会额外插入 `\x0F` 控制字符，但对显示无影响。
 3. **FLEX 中文长度限制**: 受 FLEX 单帧最大 248 字符限制，中英混排消息
@@ -743,6 +745,6 @@ BeeperTX started
 5. **FLEX 不支持 GB2312 非中文字符**: GB2312 编码中，中文区域为 0xA1-0xF7(首字节)
    和 0xA1-0xFE(次字节)。非汉字区 (如日文假名、俄文字母) 未测试。
 6. **单帧 FLEX (单发)**: 单条消息仍只发单帧 (frame 0)。追码批量 (`FlexEncoder::encodeBatch`) 支持一次 ERS + 连续多帧 (每帧 frame=0), 帧内多地址多消息, v1 仅短地址。
-7. **异步发射**: `CMD_TRANSMIT` 采用延迟执行模式——发射请求由 `api_dispatch()` 设置标志位，
-   实际的 `Transmitter::send()` 在 `setup()` 之后的 `loop()` 中由 `api_loop()` 调度执行，
+7. **预编码+异步发射**: `Transmitter::send()` 在调用方上下文 (core 0 / api_loop) 中完成 GB2312 转码和协议编码，
+   编码后的 RAW 数据通过 FreeRTOS 队列提交到 txTask (core 1) 异步发射，
    避免阻塞 AsyncWebServer 的事件循环。
