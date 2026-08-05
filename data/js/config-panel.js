@@ -68,15 +68,13 @@
     }
   }
 
-  /** 按编码显示/禁用字段: FLEX 无极性 (强制直发), Tone 仅 POCSAG 有意义 */
+  /** 按编码显示/隐藏字段: FLEX 无极性 (强制直发) 且无 Tone 概念 (POCSAG 功能码专属) */
   function updateEncodingUI(enc) {
     const isFlex = (enc === 'flex');
     const phaseGroup = document.getElementById('group-phase');
     if (phaseGroup) phaseGroup.style.display = isFlex ? 'none' : '';
     const toneGroup = document.getElementById('group-tone');
-    if (toneGroup) {
-      toneGroup.querySelectorAll('button').forEach(b => { b.disabled = isFlex; });
-    }
+    if (toneGroup) toneGroup.style.display = isFlex ? 'none' : '';
   }
 
   /** 按编码重建 Baud Rate 按钮组 (POCSAG: 512/1200, FLEX: 1600/2400/3200) */
@@ -122,7 +120,7 @@
         // 本地即时更新 UI (不需要等待 refreshPanel)
         setBtnGroup('encoding', enc);                  // 确认后端已接受
         rebuildBaudGroup(enc);                         // 切换码率选项
-        updateEncodingUI(enc);                         // FLEX: 隐藏 Phase + 禁用 Tone
+        updateEncodingUI(enc);                         // FLEX: 隐藏 Phase + Tone
         if (enc === 'flex') setBtnGroup('phase', 'inverted');  // 隐藏但保持正确状态
         setBtnGroup('baudRate', String(patch.baudRate));  // 选中默认码率
         window.Terminal.log(`encoding=${enc}: applied defaults`, 'rx');
@@ -169,7 +167,7 @@
     setBtnGroup('tone',       cfg.tone ? cfg.tone.toUpperCase() : 'A');
     setBtnGroup('msgType',    cfg.msgType);
     setBtnGroup('baudRate',   String(cfg.baudRate));
-    updateEncodingUI(cfg.encoding);  // FLEX: 隐藏 Phase + 禁用 Tone
+    updateEncodingUI(cfg.encoding);  // FLEX: 隐藏 Phase + Tone
 
     // 输入框
     setInput('inp-freq',     cfg.freqKHz);

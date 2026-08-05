@@ -165,18 +165,18 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   check('切回 pocsag: baud 选项 512,1200', baudVals() === '512,1200');
   check('切回 pocsag: 默认 1200 激活', baudActive() === '1200');
 
-  // ===== FLEX 下 Tone 禁用 + Phase 隐藏 (默认直发) =====
+  // ===== FLEX 下 Tone 隐藏 + Phase 隐藏 (默认直发) =====
   const phaseShown = () => phaseGroup.style.display !== 'none';
-  const toneDisabled = () => toneGroup._buttons.every(b => b.disabled === true);
+  const toneShown  = () => toneGroup.style.display !== 'none';
   check('初始 pocsag: phase 组显示', phaseShown());
-  check('初始 pocsag: tone 可用', !toneDisabled());
+  check('初始 pocsag: tone 组显示', toneShown());
 
   // 切到 flex: phase 隐藏 + tone 禁用; 提交 payload 不含 tone, phase 由后端强制
   lastSetConfigPayload = null;
   encGroup._listeners.click({ target: flexBtn });
   await sleep(200);
   check('切 flex: phase 组隐藏', !phaseShown());
-  check('切 flex: tone 按钮禁用', toneDisabled());
+  check('切 flex: tone 组隐藏', !toneShown());
   check('切 flex: 提交含 encoding+baudRate', lastSetConfigPayload &&
         lastSetConfigPayload.encoding === 'flex' && lastSetConfigPayload.baudRate === 1600);
   check('切 flex: 提交不含 tone (保留值)', lastSetConfigPayload && !('tone' in lastSetConfigPayload));
@@ -190,7 +190,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   encGroup._listeners.click({ target: pocBtn });
   await sleep(200);
   check('切回 pocsag: phase 组显示', phaseShown());
-  check('切回 pocsag: tone 按钮启用', !toneDisabled());
+  check('切回 pocsag: tone 组显示', toneShown());
   check('切回 pocsag: 提交 phase=normal', lastSetConfigPayload &&
         lastSetConfigPayload.phase === 'normal');
   check('切回 pocsag: 提交不含 tone (保留用户选择)', lastSetConfigPayload && !('tone' in lastSetConfigPayload));
