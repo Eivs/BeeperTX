@@ -40,6 +40,7 @@ public:
     uint64_t     address    = 1000;
     char         message[256] = "";
     MsgType      msgType    = MsgType::ALPHANUMERIC;
+    bool         mailDrop   = false;  //!< FLEX Mail Drop 标志 (仅 ALPHA 生效)
   };
 
   explicit Transmitter(int txPin);

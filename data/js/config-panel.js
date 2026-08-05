@@ -54,6 +54,14 @@
       });
     });
 
+    // FLEX Mail Drop 勾选 (仅 FLEX 显示; 默认 false 不提交)
+    const mailDropEl = document.getElementById('inp-mail-drop');
+    if (mailDropEl) {
+      mailDropEl.addEventListener('change', () => {
+        updateField('mailDrop', mailDropEl.checked);
+      });
+    }
+
     // 编码切换 → 立即视觉反馈 + 稍后原子提交 (encoding+默认值, 一次请求)
     const encGroup = document.querySelector('.btn-group[data-field="encoding"]');
     if (encGroup) {
@@ -77,6 +85,9 @@
     if (phaseGroup) phaseGroup.style.display = isFlex ? 'none' : '';
     const toneGroup = document.getElementById('group-tone');
     if (toneGroup) toneGroup.style.display = isFlex ? 'none' : '';
+    // Mail Drop 是 FLEX 特性 (POCSAG 无此概念): 仅 FLEX 显示
+    const mdGroup = document.getElementById('group-maildrop');
+    if (mdGroup) mdGroup.style.display = isFlex ? '' : 'none';
   }
 
   /** 控件锁定态 (sweep 中 true): 动态重建的按钮需继承, 否则 10s 周期
@@ -180,6 +191,9 @@
     setInput('inp-freq',  (cfg.freqKHz / 1000).toFixed(3));  // kHz → MHz 显示
     setInput('inp-power', cfg.txPower);
     setInput('inp-addr',  cfg.address);
+    // Mail Drop 勾选回显
+    const mailDropEl = document.getElementById('inp-mail-drop');
+    if (mailDropEl) mailDropEl.checked = !!cfg.mailDrop;
   }
 
   function setBtnGroup(field, val) {
@@ -243,6 +257,9 @@
     });
     const msg = document.getElementById('inp-message');
     if (msg && msg.value) cfg.message = msg.value;
+    // preset 保存含 Mail Drop (仅 FLEX 有意义, POCSAG 提交后端忽略)
+    const mdEl = document.getElementById('inp-mail-drop');
+    if (mdEl) cfg.mailDrop = mdEl.checked;
     return cfg;
   }
 
@@ -408,6 +425,9 @@
       const el = document.getElementById(id);
       if (el) el.disabled = !enabled;
     });
+    // Mail Drop 勾选 (扫中禁用)
+    const mdEl = document.getElementById('inp-mail-drop');
+    if (mdEl) mdEl.disabled = !enabled;
     // Send 按钮
     const sendBtn = document.getElementById('btn-send');
     if (sendBtn) sendBtn.disabled = !enabled;

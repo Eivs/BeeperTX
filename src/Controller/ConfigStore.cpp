@@ -58,6 +58,7 @@ void ConfigStore::loadOrDefault(TxConfig& out) {
   out.baudRate = 1200;
   out.address  = 1000;
   out.txPower  = 127;
+  out.mailDrop = false;  // FLEX Mail Drop 默认关闭 (旧 NVS 存档因结构体变大 load 失败, 回退此默认)
   strncpy(out.message, "BeeperTX OK", sizeof(out.message) - 1);
   out.message[sizeof(out.message) - 1] = '\0';
 }

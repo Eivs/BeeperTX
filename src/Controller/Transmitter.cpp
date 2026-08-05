@@ -191,7 +191,8 @@ bool Transmitter::send(const Config& cfg) {
         }
       }
       mixed[m] = '\0';
-      len = encoder.encode(cfg.address, (const char*)mixed, FlexEncoder::ALPHA);
+      len = encoder.encode(cfg.address, (const char*)mixed, FlexEncoder::ALPHA,
+                           cfg.mailDrop);
     }
 
     if (encoder.hasError()) {

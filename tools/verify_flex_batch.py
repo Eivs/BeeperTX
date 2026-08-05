@@ -362,6 +362,59 @@ int main() {
           "FlexEncoder::encodeBatch 长地址错误码传播", "");
   }
 
+  /* ---- 用例 7: Mail Drop 标志 ---- */
+  /* 解析短地址单帧的消息首字 (BIW→向量→msg_start) */
+  auto first_msg_word = [](const uint8_t *buf, size_t frame) -> uint32_t {
+    uint32_t fw[WORDS_PER_FRAME];
+    deinterleave(fw, frame_data(buf, frame));
+    uint32_t biw = tf_decode_word_data(fw[0]);
+    uint32_t s_v = (biw >> 10) & 0x3F;
+    uint32_t vec = tf_decode_word_data(fw[s_v]);
+    uint32_t ms = (vec >> 7) & 0x7F;
+    return tf_decode_word_data(fw[ms]);
+  };
+  {
+    /* 单帧扩展 API: mail_drop=1 置消息首字 bit20, =0 不置 */
+    uint8_t out0[800], out1[800];
+    int err0 = 0, err1 = 0;
+    struct tf_message_config cfg = {0};
+    size_t n0 = tf_encode_flex_message_ex("MAILDROP TEST", 1000, out0,
+                                          sizeof(out0), &err0, NULL);
+    cfg.mail_drop = 1;
+    size_t n1 = tf_encode_flex_message_ex("MAILDROP TEST", 1000, out1,
+                                          sizeof(out1), &err1, &cfg);
+    uint32_t w0 = first_msg_word(out0, 0);
+    uint32_t w1 = first_msg_word(out1, 0);
+    /* 置位/未置位 + 编码成功即可; 其余位 (k-bit 校验和) 随消息字变化属
+     * 协议正确行为 (校验和覆盖含 bit20 的整个消息首字), 不断言相等 */
+    bool md_ok = err0 == 0 && err1 == 0 && n0 == n1 &&
+                 (w1 & (1u << 20)) != 0 && (w0 & (1u << 20)) == 0;
+    CHECK(md_ok, "单帧 mail_drop 置消息首字 bit20 (仅 ALPHA)", "");
+  }
+  {
+    /* FlexEncoder::encode 封装透传 */
+    FlexEncoder enc;
+    enc.encode(1000, "MAILDROP WRAP", FlexEncoder::ALPHA, false);
+    uint32_t w0 = first_msg_word(enc.getData(), 0);
+    enc.encode(1000, "MAILDROP WRAP", FlexEncoder::ALPHA, true);
+    uint32_t w1 = first_msg_word(enc.getData(), 0);
+    CHECK(!enc.hasError() && (w1 & (1u << 20)) != 0 &&
+          (w0 & (1u << 20)) == 0,
+          "FlexEncoder::encode mailDrop 参数透传", "");
+  }
+  {
+    /* 批量透传: BatchMsg.mailDrop=true 置位 */
+    FlexEncoder enc;
+    FlexEncoder::BatchMsg ms[1];
+    ms[0].capcode = 1000; ms[0].msg = "MAILDROP BATCH";
+    ms[0].type = FlexEncoder::ALPHA; ms[0].mailDrop = true;
+    size_t encd = 0;
+    size_t len = enc.encodeBatch(ms, 1, &encd);
+    uint32_t w = first_msg_word(enc.getData(), 0);
+    CHECK(!enc.hasError() && len > 0 && encd == 1 && (w & (1u << 20)) != 0,
+          "批量 mail_drop 透传置位", "");
+  }
+
   if (g_fail) { printf("FAILED: %d\n", g_fail); return 1; }
   printf("ALL PASS\n");
   return 0;

@@ -29,6 +29,7 @@ public:
     uint64_t capcode;   //!< 短地址 (1..1933312)
     const char *msg;    //!< NULL = tone-only
     MsgType type;       //!< ALPHA / NUMERIC / TONE_ONLY
+    bool mailDrop = false; //!< Mail Drop 标志 (仅 ALPHA 生效, 寻呼机特定行为)
   };
 
   FlexEncoder();
@@ -38,9 +39,12 @@ public:
    * @param capcode 寻呼机地址 (Short: 1-1933312, Long: 2101249-4297068542)
    * @param msg     ASCII 消息字符串 (ALPHA/NUMERIC 模式)
    * @param type    消息类型 (ALPHA / NUMERIC / TONE_ONLY)
+   * @param mailDrop Mail Drop 标志 (仅 ALPHA 生效: 置消息首字 bit20;
+   *                  NUMERIC/TONE_ONLY 由协议规范忽略, 传值无效果)
    * @return 编码后的字节数，失败返回 0
    */
-  size_t encode(uint64_t capcode, const char *msg, MsgType type = ALPHA);
+  size_t encode(uint64_t capcode, const char *msg, MsgType type = ALPHA,
+                bool mailDrop = false);
 
   /**
    * @brief 批量编码: 一次 ERS + 连续多帧 (每帧 frame=0), 帧内多地址多消息。

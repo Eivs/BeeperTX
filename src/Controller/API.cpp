@@ -322,6 +322,7 @@ Transmitter::Config CommandDispatcher::makeTxConfig() const {
   c.address  = m_config.address;
   memcpy(c.message, m_config.message, sizeof(c.message));
   c.msgType  = m_config.msgType;
+  c.mailDrop = m_config.mailDrop;
   return c;
 }
 

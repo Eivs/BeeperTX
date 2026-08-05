@@ -89,6 +89,7 @@ struct TxConfig {
   uint16_t     baudRate  = 1200;         // 码率: 512/1200/1600/2400/3200/6400
   uint32_t     address   = 1000;         // POCSAG: 0–2097151, FLEX: CAPCODE
   uint8_t      txPower   = 127;          // PA 功率 0–127 (127=+20dBm)
+  bool         mailDrop  = false;        // FLEX Mail Drop 标志 (仅 ALPHA 生效)
   char         message[256];             // UTF-8 消息, 最大 255 字节
 };
 

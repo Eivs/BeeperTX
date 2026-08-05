@@ -17,6 +17,7 @@ class FakeEl {
     this.classList = { _s: new Set(), add(c) { this._s.add(c); }, remove(c) { this._s.delete(c); }, toggle(c, on) { on ? this._s.add(c) : this._s.delete(c); }, contains(c) { return this._s.has(c); } };
     this.disabled = false;
     this.value = '';
+    this.checked = false;
     this.innerHTML = '';
     this.dataset = {};
     this._listeners = {};
@@ -119,7 +120,7 @@ global.window = {
     getLog: async () => getLogResp,
     getLogAfter: async (seq) => { getLogAfterCalls.push(seq); return getLogResp; },
     wifiStatus: async () => ({ code: 0, ip: '1.2.3.4', state: 1 }),
-    getConfig: async () => ({ code: 0, encoding: 'pocsag', phase: 'normal', tone: 'A', msgType: 'numeric', freqKHz: 152675, baudRate: 1200, address: 1000, txPower: 100, message: '' }),
+    getConfig: async () => ({ code: 0, encoding: 'pocsag', phase: 'normal', tone: 'A', msgType: 'numeric', freqKHz: 152675, baudRate: 1200, address: 1000, txPower: 100, mailDrop: false, message: '' }),
     setConfig: async (cfg) => { setConfigCalls++; lastSetConfigPayload = cfg; return { code: 0 }; },
     sweepStatus: async () => sweepStatusResp,
     sweepStart: async () => ({ code: 0, start: 1000 }),
@@ -172,6 +173,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const toneShown  = () => toneGroup.style.display !== 'none';
   check('初始 pocsag: phase 组显示', phaseShown());
   check('初始 pocsag: tone 组显示', toneShown());
+  // Mail Drop 仅 FLEX 显示 (POCSAG 无此概念)
+  const mdShown = () => el('group-maildrop').style.display !== 'none';
+  check('初始 pocsag: maildrop 组隐藏', !mdShown());
 
   // 切到 flex: phase 隐藏 + tone 禁用; 提交 payload 不含 tone, phase 由后端强制
   lastSetConfigPayload = null;
@@ -179,6 +183,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await sleep(200);
   check('切 flex: phase 组隐藏', !phaseShown());
   check('切 flex: tone 组隐藏', !toneShown());
+  check('切 flex: maildrop 组显示', mdShown());
   check('切 flex: 提交含 encoding+baudRate', lastSetConfigPayload &&
         lastSetConfigPayload.encoding === 'flex' && lastSetConfigPayload.baudRate === 1600);
   check('切 flex: 提交不含 tone (保留值)', lastSetConfigPayload && !('tone' in lastSetConfigPayload));
@@ -193,9 +198,23 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await sleep(200);
   check('切回 pocsag: phase 组显示', phaseShown());
   check('切回 pocsag: tone 组显示', toneShown());
+  check('切回 pocsag: maildrop 组隐藏', !mdShown());
   check('切回 pocsag: 提交 phase=normal', lastSetConfigPayload &&
         lastSetConfigPayload.phase === 'normal');
   check('切回 pocsag: 提交不含 tone (保留用户选择)', lastSetConfigPayload && !('tone' in lastSetConfigPayload));
+
+  // ===== Mail Drop 勾选提交 + 回显 =====
+  const mdInput = el('inp-mail-drop');
+  mdInput.checked = true;
+  await mdInput._listeners.change();
+  check('勾选 maildrop 提交 mailDrop=true', lastSetConfigPayload &&
+        lastSetConfigPayload.mailDrop === true);
+  mdInput.checked = false;
+  await mdInput._listeners.change();
+  check('取消勾选提交 mailDrop=false', lastSetConfigPayload &&
+        lastSetConfigPayload.mailDrop === false);
+  // 回显: 后端配置 mailDrop=false → 勾选框不勾选
+  check('回显 mailDrop=false 不勾选', mdInput.checked === false);
 
   // ===== 原有用例: updateSweepUI 显示 =====
   // 场景 1: IDLE (running=false) → 状态行隐藏, 不显示 Freq

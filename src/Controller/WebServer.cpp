@@ -160,6 +160,7 @@ String WebServer::configToJson(const TxConfig& cfg) {
   doc["baudRate"]  = cfg.baudRate;
   doc["address"]   = cfg.address;
   doc["txPower"]   = cfg.txPower;
+  doc["mailDrop"]  = cfg.mailDrop;
   doc["message"]   = String(cfg.message);
 
   String out;
@@ -197,6 +198,8 @@ void WebServer::jsonToConfig(const char* json, TxConfig& cfg) {
     cfg.address    = doc["address"].as<uint32_t>();
   if (doc["txPower"].is<uint8_t>() || doc["txPower"].is<const char*>())
     cfg.txPower    = doc["txPower"].as<uint8_t>();
+  if (doc["mailDrop"].is<bool>())
+    cfg.mailDrop   = doc["mailDrop"].as<bool>();
   if (doc["message"].is<const char*>()) {
     String msg = doc["message"].as<String>();
     strncpy(cfg.message, msg.c_str(), sizeof(cfg.message) - 1);

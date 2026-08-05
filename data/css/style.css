@@ -399,6 +399,21 @@ body.terminal {
   margin: 0 4px;
 }
 
+/* FLEX Mail Drop 勾选 */
+.form-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  padding: 2px 0;
+}
+.form-check input[type="checkbox"] {
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
 /* ---- Responsive ---- */
 @media (max-width: 768px) {
   .main-content {
