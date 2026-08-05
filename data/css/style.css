@@ -63,6 +63,7 @@ body.terminal {
   color: var(--primary);
   font-weight: bold;
   font-size: 14px;
+  padding: 2px 0;
 }
 
 .conn-dot {
