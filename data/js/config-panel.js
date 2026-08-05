@@ -437,10 +437,10 @@
     }
   }
 
-  /** 由 main.js 定时轮询调用, 刷新扫描状态 UI (sweep 进行中高频, 空闲低频校准) */
+  /** 由 main.js 定时轮询调用, 刷新扫描状态 UI (仅 sweep 进行中; 停止沿自动关闭) */
   let sweepUiSyncing = false;
   async function updateSweepUI() {
-    if (sweepUiSyncing) return;  // 并发保护: 1.5s 高频轮询与 5s 兜底校准可能重叠
+    if (sweepUiSyncing) return;  // 并发保护: 1.5s 轮询与 stop/start 收尾同步可能重叠
     sweepUiSyncing = true;
     try {
       const s = await window.API.sweepStatus();

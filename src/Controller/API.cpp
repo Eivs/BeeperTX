@@ -388,6 +388,9 @@ void CommandDispatcher::handleGetWifiStatus(const CmdRequest* req, CmdResponse* 
   memset(&resp->wifi, 0, sizeof(resp->wifi));
   resp->wifi.state = (uint8_t)m_wifi->state();
   resp->wifi.rssi  = -1;
+  // ssid/ip 此前从未填充 → /api/wifi/status 的 ip 恒为空, webUI wifi-ip 不显示
+  strncpy(resp->wifi.ssid, m_wifi->ssid(), sizeof(resp->wifi.ssid) - 1);
+  strncpy(resp->wifi.ip,   m_wifi->ipAddress(), sizeof(resp->wifi.ip) - 1);
   resp->code = RespCode::OK;
 }
 

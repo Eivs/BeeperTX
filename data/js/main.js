@@ -72,12 +72,6 @@
       }
     }, 1500);
 
-    // 扫描状态兜底校准 (每 5s, 无条件): 其他设备/串口启动的 sweep 也能被
-    // 检测到 (本页未主动 start 时无高频轮询); updateSweepUI 内有并发保护。
-    setInterval(() => {
-      if (window.ConfigPanel) window.ConfigPanel.updateSweepUI();
-    }, 5000);
-
     // 日志轮询 (每 2s)
     setInterval(pollLog, 2000);
 
