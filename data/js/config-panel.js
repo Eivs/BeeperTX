@@ -68,6 +68,17 @@
     }
   }
 
+  /** 按编码显示/禁用字段: FLEX 无极性 (强制直发), Tone 仅 POCSAG 有意义 */
+  function updateEncodingUI(enc) {
+    const isFlex = (enc === 'flex');
+    const phaseGroup = document.getElementById('group-phase');
+    if (phaseGroup) phaseGroup.style.display = isFlex ? 'none' : '';
+    const toneGroup = document.getElementById('group-tone');
+    if (toneGroup) {
+      toneGroup.querySelectorAll('button').forEach(b => { b.disabled = isFlex; });
+    }
+  }
+
   /** 按编码重建 Baud Rate 按钮组 (POCSAG: 512/1200, FLEX: 1600/2400/3200) */
   function rebuildBaudGroup(enc) {
     const group = document.querySelector('.btn-group[data-field="baudRate"]');
@@ -94,16 +105,15 @@
     });
   }
 
-  /** 根据编码切换设置 Polar/Tone/Baud 默认值 (与 encoding 原子提交) */
+  /** 根据编码切换设置 Polar/Baud 默认值 (与 encoding 原子提交) */
   async function applyEncodingDefaults(enc) {
     const patch = { encoding: enc };
     if (enc === 'pocsag') {
+      // POCSAG: phase 恢复正相默认; tone 保留用户选择 (FLEX 期间未提交)
       patch.phase    = 'normal';
-      patch.tone     = 'A';
       patch.baudRate = BAUD_DEFAULT.pocsag;
     } else if (enc === 'flex') {
-      patch.phase    = 'inverted';
-      patch.tone     = 'D';
+      // FLEX: 无极性概念, phase 由后端强制直发; tone 不适用 (保留值, 切回恢复)
       patch.baudRate = BAUD_DEFAULT.flex;
     } else return;
     try {
@@ -112,8 +122,8 @@
         // 本地即时更新 UI (不需要等待 refreshPanel)
         setBtnGroup('encoding', enc);                  // 确认后端已接受
         rebuildBaudGroup(enc);                         // 切换码率选项
-        setBtnGroup('phase',    patch.phase);
-        setBtnGroup('tone',     patch.tone);
+        updateEncodingUI(enc);                         // FLEX: 隐藏 Phase + 禁用 Tone
+        if (enc === 'flex') setBtnGroup('phase', 'inverted');  // 隐藏但保持正确状态
         setBtnGroup('baudRate', String(patch.baudRate));  // 选中默认码率
         window.Terminal.log(`encoding=${enc}: applied defaults`, 'rx');
       } else {
@@ -159,6 +169,7 @@
     setBtnGroup('tone',       cfg.tone ? cfg.tone.toUpperCase() : 'A');
     setBtnGroup('msgType',    cfg.msgType);
     setBtnGroup('baudRate',   String(cfg.baudRate));
+    updateEncodingUI(cfg.encoding);  // FLEX: 隐藏 Phase + 禁用 Tone
 
     // 输入框
     setInput('inp-freq',     cfg.freqKHz);

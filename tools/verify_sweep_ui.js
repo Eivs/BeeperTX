@@ -32,6 +32,7 @@ class FakeGroup {
     this.dataset = { field };
     this._buttons = [];
     this._listeners = {};
+    this.style = { display: '' };
     this.addEventListener = (ev, fn) => { this._listeners[ev] = fn; };
     this.appendChild = (b) => { this._buttons.push(b); };
     this.setAttribute = () => {};
@@ -62,9 +63,18 @@ function mkBtn(val, active) {
   return b;
 }
 encGroup._buttons = [mkBtn('pocsag', true), mkBtn('flex')];
+const toneGroup = allGroups.find(g => g.dataset.field === 'tone');
+toneGroup._buttons = ['A','B','C','D'].map(v => mkBtn(v, v === 'A'));
+const phaseGroup = allGroups.find(g => g.dataset.field === 'phase');
+phaseGroup._buttons = [mkBtn('normal', true), mkBtn('inverted')];
 
 global.document = {
-  getElementById(id) { if (!elements.has(id)) elements.set(id, new FakeEl(id)); return elements.get(id); },
+  getElementById(id) {
+    if (id === 'group-phase') return phaseGroup;
+    if (id === 'group-tone') return toneGroup;
+    if (!elements.has(id)) elements.set(id, new FakeEl(id));
+    return elements.get(id);
+  },
   querySelectorAll(sel) { if (sel.includes('btn-group')) return allGroups; return []; },
   querySelector(sel) {
     if (sel.includes('data-field=')) {
@@ -96,6 +106,7 @@ let sweepActiveFlag = null;
 
 let sweepStatusResp = { code: 0, running: false, mode: 0, current: 0, total: 0, done: 0 };
 let setConfigCalls = 0;
+let lastSetConfigPayload = null;
 let getLogResp = '';
 let getStatusCalls = 0;
 
@@ -107,7 +118,7 @@ global.window = {
     getLog: async () => getLogResp,
     wifiStatus: async () => ({ code: 0, ip: '1.2.3.4', state: 1 }),
     getConfig: async () => ({ code: 0, encoding: 'pocsag', phase: 'normal', tone: 'A', msgType: 'numeric', freqKHz: 152675, baudRate: 1200, address: 1000, txPower: 100, message: '' }),
-    setConfig: async () => { setConfigCalls++; return { code: 0 }; },
+    setConfig: async (cfg) => { setConfigCalls++; lastSetConfigPayload = cfg; return { code: 0 }; },
     sweepStatus: async () => sweepStatusResp,
     sweepStop: async () => ({ code: 0 }),
   },
@@ -150,6 +161,36 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await sleep(200);
   check('切回 pocsag: baud 选项 512,1200', baudVals() === '512,1200');
   check('切回 pocsag: 默认 1200 激活', baudActive() === '1200');
+
+  // ===== FLEX 下 Tone 禁用 + Phase 隐藏 (默认直发) =====
+  const phaseShown = () => phaseGroup.style.display !== 'none';
+  const toneDisabled = () => toneGroup._buttons.every(b => b.disabled === true);
+  check('初始 pocsag: phase 组显示', phaseShown());
+  check('初始 pocsag: tone 可用', !toneDisabled());
+
+  // 切到 flex: phase 隐藏 + tone 禁用; 提交 payload 不含 tone, phase 由后端强制
+  lastSetConfigPayload = null;
+  encGroup._listeners.click({ target: flexBtn });
+  await sleep(200);
+  check('切 flex: phase 组隐藏', !phaseShown());
+  check('切 flex: tone 按钮禁用', toneDisabled());
+  check('切 flex: 提交含 encoding+baudRate', lastSetConfigPayload &&
+        lastSetConfigPayload.encoding === 'flex' && lastSetConfigPayload.baudRate === 1600);
+  check('切 flex: 提交不含 tone (保留值)', lastSetConfigPayload && !('tone' in lastSetConfigPayload));
+  check('切 flex: 提交不含 phase (后端强制直发)', lastSetConfigPayload && !('phase' in lastSetConfigPayload));
+  check('切 flex: phase 内部状态仍为 inverted',
+        phaseGroup.querySelector('button.active').dataset.value === 'inverted');
+  check('切 flex: tone 值保留 (A 仍选中)', toneGroup.querySelector('button.active').dataset.value === 'A');
+
+  // 切回 pocsag: phase 恢复显示 + tone 启用; phase 提交为 normal (tone 保留)
+  lastSetConfigPayload = null;
+  encGroup._listeners.click({ target: pocBtn });
+  await sleep(200);
+  check('切回 pocsag: phase 组显示', phaseShown());
+  check('切回 pocsag: tone 按钮启用', !toneDisabled());
+  check('切回 pocsag: 提交 phase=normal', lastSetConfigPayload &&
+        lastSetConfigPayload.phase === 'normal');
+  check('切回 pocsag: 提交不含 tone (保留用户选择)', lastSetConfigPayload && !('tone' in lastSetConfigPayload));
 
   // ===== 原有用例: updateSweepUI 显示 =====
   // 场景 1: IDLE (running=false) → 状态行隐藏, 不显示 Freq

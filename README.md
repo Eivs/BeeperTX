@@ -395,9 +395,9 @@ ERR <CMD> code=<N> detail=<M>
 | encoding | POCSAG / FLEX | POCSAG | 编码协议 |
 | freqKHz | 119000–1050000 | 152675 | 发射频率 (kHz) |
 | txPower | 0–127 | 127 | PA 功率 (127=+20dBm) |
-| phase | NORMAL / INVERTED | NORMAL | FSK 相位极性 |
-| tone | A / B / C / D | D | POCSAG 铃音/功能码 |
-| baudRate | POCSAG: 512/1200, FLEX: 1600/2400/3200 | 1200 | 码率 (bps) |
+| phase | NORMAL / INVERTED | NORMAL | FSK 相位极性 (仅 POCSAG; FLEX 固定直发) |
+| tone | A / B / C / D | D | POCSAG 铃音/功能码 (仅 POCSAG; FLEX 不适用) |
+| baudRate | POCSAG: 512/1200, FLEX: 1600/2400/3200 | 1200 / 1600 | 码率 (bps, 按编码) |
 | msgType | NUMERIC / ALPHANUMERIC | ALPHANUMERIC | 消息类型 |
 | address | 0–2097151 (POCSAG) | 1000 | 寻呼地址 / CAPCODE |
 | message | UTF-8, 最大 255 字节 | "BeeperTX OK" | 消息内容 |

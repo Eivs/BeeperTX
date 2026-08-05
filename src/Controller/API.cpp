@@ -270,11 +270,18 @@ void CommandDispatcher::handleSetConfig(const CmdRequest* req, CmdResponse* resp
     return;
   }
 
-  m_config = c;
+  // FLEX 无极性概念: 强制直发 (invert=false), 防 NORMAL 误配导致接收机无法同步
+  // (web/串口两条入口都经此; 出厂默认 NORMAL 仅对 POCSAG 有意义)
+  TxConfig effective = c;
+  if (effective.encoding == EncodingType::FLEX) {
+    effective.phase = PhaseType::INVERTED;
+  }
+
+  m_config = effective;
 
   // 立即生效: 更新频率和功率
-  Si446x_setFrequencyKHz(c.freqKHz);
-  Si446x_setTxPower(c.txPower);
+  Si446x_setFrequencyKHz(effective.freqKHz);
+  Si446x_setTxPower(effective.txPower);
 
   resp->cmd  = CmdID::CMD_SET_CONFIG;
   resp->code = RespCode::OK;
@@ -532,6 +539,11 @@ void CommandDispatcher::handleSweepStart(const CmdRequest* req, CmdResponse* res
   if (req->sweepStart.tone       >= 0) cfg.tone      = static_cast<ToneType>(req->sweepStart.tone);
   if (req->sweepStart.msgType    >= 0) cfg.msgType   = static_cast<MsgType>(req->sweepStart.msgType);
   if (req->sweepStart.intervalMs >= 0) cfg.intervalMs = (uint16_t)req->sweepStart.intervalMs;
+
+  // FLEX 无极性概念: 强制直发 (与 SET_CONFIG 一致), 覆盖字段传 NORMAL 也无效
+  if (cfg.encoding == EncodingType::FLEX) {
+    cfg.phase = PhaseType::INVERTED;
+  }
 
   int result = m_sweeper->start(cfg);
   if (result == 0) {

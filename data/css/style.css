@@ -215,6 +215,20 @@ body.terminal {
   border-color: var(--primary);
 }
 
+/* FLEX 下 Tone 不适用: 禁用但保留值 */
+.btn-group .btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  background: var(--bg-input);
+  color: var(--text-dim, #888);
+  border-color: var(--border);
+}
+.btn-group .btn:disabled:hover {
+  background: var(--bg-input);
+  color: var(--text-dim, #888);
+  border-color: var(--border);
+}
+
 .btn-primary {
   background: var(--primary) !important;
   color: #fff !important;
