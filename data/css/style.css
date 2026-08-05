@@ -400,7 +400,7 @@ body.terminal {
 }
 
 /* FLEX Mail Drop 勾选 */
-.form-check {
+.cfg-group label.form-check {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -409,7 +409,7 @@ body.terminal {
   cursor: pointer;
   padding: 2px 0;
 }
-.form-check input[type="checkbox"] {
+.cfg-group label.form-check input[type="checkbox"] {
   accent-color: var(--primary);
   cursor: pointer;
 }
