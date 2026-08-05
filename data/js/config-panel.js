@@ -77,6 +77,10 @@
     if (toneGroup) toneGroup.style.display = isFlex ? 'none' : '';
   }
 
+  /** 控件锁定态 (sweep 中 true): 动态重建的按钮需继承, 否则 10s 周期
+   *  refresh 重建 Baud 组时锁定被冲掉 (sweep 中选项偶尔变可选) */
+  let controlsLocked = false;
+
   /** 按编码重建 Baud Rate 按钮组 (POCSAG: 512/1200, FLEX: 1600/2400/3200) */
   function rebuildBaudGroup(enc) {
     const group = document.querySelector('.btn-group[data-field="baudRate"]');
@@ -94,6 +98,7 @@
       b.dataset.value = String(v);
       b.textContent = String(v);
       if (String(v) === keep) b.classList.add('active');
+      b.disabled = controlsLocked;  // 继承锁定态 (sweep 中 refresh 重建后仍禁用)
       b.addEventListener('click', () => {
         group.querySelectorAll('button').forEach(x => x.classList.remove('active'));
         b.classList.add('active');
@@ -386,6 +391,7 @@
 
   /** 启用/禁用配置面板控件 (扫中禁用) */
   function setConfigEnabled(enabled) {
+    controlsLocked = !enabled;  // 供 rebuildBaudGroup 重建时继承
     // 按钮组
     document.querySelectorAll('#config-panel .btn-group[data-field] button').forEach(b => {
       b.disabled = !enabled;

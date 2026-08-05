@@ -301,6 +301,23 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   check('刷新检测: 设备停止后关闭轮询', CP.isSweepPolling() === false);
   ConfigPanel = CP;  // 后续 main.js 测试引用重载后的模块
 
+  // ===== 新增: sweep 中 10s 周期 refresh 重建 Baud 组后仍保持禁用 =====
+  // 根因: refreshPanel → rebuildBaudGroup 动态重建按钮 (不带 disabled),
+  // sweep 锁定在重建时被冲掉 → 选项偶尔变可选。修复: 重建继承锁定态。
+  // (注: 直接禁用路径由 setConfigEnabled 处理, 此处仅验证重建路径)
+  const baudBtns = () => baudGroup._buttons;
+  sweepStatusResp = { code: 0, running: true, mode: 1, current: 1, total: 10, done: 1 };
+  await CP.updateSweepUI();  // 进入运行态 → 控件锁定 (controlsLocked=true)
+  await CP.refresh();        // 模拟 10s 周期刷新 (内部 rebuildBaudGroup)
+  check('sweep 中 refresh 重建后 baud 仍禁用', baudBtns().every(b => b.disabled === true));
+  check('sweep 中 refresh 后 baud 选中保留', baudActive() === '1200');
+  // 停止后 refresh → 恢复可选
+  sweepStatusResp = { code: 0, running: false, mode: 0, current: 0, total: 0, done: 0 };
+  await CP.updateSweepUI();
+  await CP.refresh();
+  check('停止后 refresh 重建 baud 恢复可选', baudBtns().every(b => b.disabled === false));
+  check('停止后 baud 选中保留', baudActive() === '1200');
+
   // ===== 新增: Preset 语义 =====
   store['beeper_tx_presets'] = JSON.stringify({ p1: { freqKHz: 152675, txPower: 90 } });
   ConfigPanel.refresh = async () => {};
