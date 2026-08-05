@@ -122,6 +122,13 @@ bool Sweeper::isFreqMax() const {
   return m_current > m_cfg.freqMaxKHz;
 }
 
+void Sweeper::logProgress(const char* prefix) {
+  char logLine[128];
+  snprintf(logLine, sizeof(logLine), "%s done=%lu/%lu",
+           prefix, (unsigned long)m_done, (unsigned long)m_total);
+  api_log(logLine);
+}
+
 // ============================================================
 // 主循环 (由 main.cpp loop 驱动)
 // ============================================================
@@ -147,7 +154,7 @@ void Sweeper::loop() {
   // 范围完成自动停止 (规格 §7.2)
   if (m_done >= m_total) {
     stop();
-    api_log("SWEEP complete");
+    logProgress("SWEEP complete");
     return;
   }
 
@@ -229,13 +236,6 @@ void Sweeper::txAddrBatch() {
       if (!m_tx->sendPocsagRaw(encoder.getBaseband(), words, m_cfg.baudRate)) {
         return;  // 队列满: 下帧重试 (m_batchLeft 未推进)
       }
-      char logLine[128];
-      snprintf(logLine, sizeof(logLine),
-               "SWEEP addr batch: %lu-%lu (%d/%d addrs) POCSAG",
-               (unsigned long)m_batchAddrs[0],
-               (unsigned long)m_batchAddrs[sub - 1],
-               addrEncoded, sub);
-      api_log(logLine);
     } else {
       // 理论不可达 (55 地址恒可编码): 防御推进, 避免卡死
       api_log("SWEEP addr batch encode failed");
@@ -243,11 +243,22 @@ void Sweeper::txAddrBatch() {
     m_batchLeft -= sub;
     m_done += (uint32_t)addrEncoded;
 
+    // 终端进度: 每批打印实际已发送区间 + done/total
+    if (words > 0) {
+      char logLine[128];
+      snprintf(logLine, sizeof(logLine),
+               "SWEEP addr %lu-%lu POCSAG done=%lu/%lu",
+               (unsigned long)m_batchAddrs[0],
+               (unsigned long)m_batchAddrs[sub - 1],
+               (unsigned long)m_done, (unsigned long)m_total);
+      api_log(logLine);
+    }
+
     m_current = m_batchBase + m_batchSize;
     m_batchBase = 0;
     m_batchSize = 0;
     if (isAddrMax()) {
-      api_log("SWEEP addr complete");
+      logProgress("SWEEP addr complete");
       stop();
     }
 
@@ -261,7 +272,7 @@ void Sweeper::txAddrBatch() {
 
     uint32_t addr = m_current;
     if (addr > m_cfg.addrEnd) {
-      api_log("SWEEP addr complete");
+      logProgress("SWEEP addr complete");
       stop();
       return;
     }
@@ -309,11 +320,17 @@ void Sweeper::txAddrBatch() {
         }
         m_done++;
         m_current = addr + 1;
+        char logLine[128];
+        snprintf(logLine, sizeof(logLine),
+                 "SWEEP addr %lu FLEX done=%lu/%lu",
+                 (unsigned long)addr,
+                 (unsigned long)m_done, (unsigned long)m_total);
+        api_log(logLine);
       } else {
         m_current = addr + 1;
       }
       if (isAddrMax()) {
-        api_log("SWEEP addr complete");
+        logProgress("SWEEP addr complete");
         stop();
       }
       return;
@@ -322,11 +339,6 @@ void Sweeper::txAddrBatch() {
     size_t encoded = 0;
     size_t len = m_flexEncoder.encodeBatch(m_flexBatch, n, &encoded);
     if (len > 0 && !m_flexEncoder.hasError() && encoded > 0) {
-      char logLine[128];
-      snprintf(logLine, sizeof(logLine), "SWEEP addr=%lu..%lu FLEX batch",
-               (unsigned long)addr, (unsigned long)(addr + encoded - 1));
-      api_log(logLine);
-
       bool invert = (m_cfg.phase == PhaseType::NORMAL);
       if (!m_tx->sendFlexRaw(m_flexEncoder.getData(), len, m_cfg.baudRate,
                              invert)) {
@@ -334,13 +346,20 @@ void Sweeper::txAddrBatch() {
       }
       m_done += (uint32_t)encoded;
       m_current = addr + (uint32_t)encoded;
+      // 终端进度: 批次入队成功后才打印 (队列满重试不重复计数)
+      char logLine[128];
+      snprintf(logLine, sizeof(logLine),
+               "SWEEP addr %lu-%lu FLEX done=%lu/%lu",
+               (unsigned long)addr, (unsigned long)(addr + encoded - 1),
+               (unsigned long)m_done, (unsigned long)m_total);
+      api_log(logLine);
     } else {
       // 编码失败 (理论不可达: 短消息恒可编码): 防御推进, 避免卡死
       m_current = addr + 1;
     }
 
     if (isAddrMax()) {
-      api_log("SWEEP addr complete");
+      logProgress("SWEEP addr complete");
       stop();
     }
   }
@@ -352,7 +371,7 @@ void Sweeper::txAddrBatch() {
 void Sweeper::txFreqOnce() {
   // 检查频率上限
   if (isFreqMax()) {
-    api_log("SWEEP freq complete");
+    logProgress("SWEEP freq complete");
     stop();
     return;
   }
@@ -379,17 +398,19 @@ void Sweeper::txFreqOnce() {
 
   if (!m_tx->send(cfg)) return;  // 队列满: 下帧重试 (m_current 未推进)
 
+  // 终端进度: 每点打印频率 + done/total (含本次)
   char logLine[128];
   snprintf(logLine, sizeof(logLine),
-           "SWEEP freq=%lukHz addr=%lu",
-           (unsigned long)m_current, (unsigned long)cfg.address);
+           "SWEEP freq=%lukHz addr=%lu done=%lu/%lu",
+           (unsigned long)m_current, (unsigned long)cfg.address,
+           (unsigned long)(m_done + 1), (unsigned long)m_total);
   api_log(logLine);
 
   m_done++;
   m_current += m_cfg.freqStepKHz;
 
   if (isFreqMax()) {
-    api_log("SWEEP freq complete");
+    logProgress("SWEEP freq complete");
     stop();
   }
 }

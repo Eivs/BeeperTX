@@ -110,6 +110,10 @@ public:
     m_log.add(line);
   }
   void getLog(char* buf, size_t size) { m_log.get(buf, size); }
+  void getLogAfter(char* buf, size_t size, uint32_t after,
+                   uint32_t* seqOut, bool* wrappedOut) {
+    m_log.getAfter(buf, size, after, seqOut, wrappedOut);
+  }
 
   // ---- 快捷入口 ----
   RespCode sweepStartSimple(uint8_t mode, uint32_t* startOut, int* detailOut);
@@ -807,6 +811,11 @@ TxConfig api_getConfig() {
 
 void api_getLog(char* buf, size_t size) {
   g_dispatcher.getLog(buf, size);
+}
+
+void api_getLogAfter(char* buf, size_t size, uint32_t after,
+                     uint32_t* seqOut, bool* wrappedOut) {
+  g_dispatcher.getLogAfter(buf, size, after, seqOut, wrappedOut);
 }
 
 void api_log(const char* line) {

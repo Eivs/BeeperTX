@@ -457,9 +457,36 @@ void WebServer::onWifiScan(AsyncWebServerRequest* req) {
 }
 
 void WebServer::onGetLog(AsyncWebServerRequest* req) {
+  // 增量拉取: ?after=<seq> 只返回写序号 > seq 的新行 (减少 sweep 高频
+  // 日志下的传输量); 省略 after 或 after=0 全量导出。客户端序号已滚出
+  // 环形窗口时 wrapped=true, 前端需全量重绘。
+  uint32_t after = 0;
+  if (req->hasParam("after")) {
+    after = (uint32_t)strtoul(req->getParam("after")->value().c_str(),
+                              nullptr, 10);
+  }
+
+  bool wrapped = false;
+  uint32_t seq = 0;
   char buf[2048];
-  api_getLog(buf, sizeof(buf));
-  req->send(200, "text/plain", buf);
+  api_getLogAfter(buf, sizeof(buf), after, &seq, &wrapped);
+
+  JsonDocument doc;
+  doc["seq"]     = seq;
+  doc["wrapped"] = wrapped;
+  JsonArray lines = doc["lines"].to<JsonArray>();
+  char* p = buf;
+  while (*p) {
+    char* nl = strchr(p, '\n');
+    if (nl) *nl = '\0';
+    if (*p) lines.add(String(p));  // 跳过空行 (环形槽位无内容)
+    if (!nl) break;
+    p = nl + 1;
+  }
+
+  String out;
+  serializeJson(doc, out);
+  req->send(200, "application/json", out);
 }
 
 // ============================================================

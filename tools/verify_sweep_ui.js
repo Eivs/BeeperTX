@@ -107,19 +107,22 @@ let sweepActiveFlag = null;
 let sweepStatusResp = { code: 0, running: false, mode: 0, current: 0, total: 0, done: 0 };
 let setConfigCalls = 0;
 let lastSetConfigPayload = null;
-let getLogResp = '';
+let getLogResp = { seq: 0, wrapped: false, lines: [] };  // 新 JSON 格式
+let getLogAfterCalls = [];
 let getStatusCalls = 0;
 
 global.window = {
-  Terminal: { log() {} },
+  Terminal: { log() {}, clear() {} },
   __setSweepActive: (a) => { sweepActiveFlag = a; },
   API: {
     getStatus: async () => { getStatusCalls++; return { code: 0, txCount: 5 }; },
     getLog: async () => getLogResp,
+    getLogAfter: async (seq) => { getLogAfterCalls.push(seq); return getLogResp; },
     wifiStatus: async () => ({ code: 0, ip: '1.2.3.4', state: 1 }),
     getConfig: async () => ({ code: 0, encoding: 'pocsag', phase: 'normal', tone: 'A', msgType: 'numeric', freqKHz: 152675, baudRate: 1200, address: 1000, txPower: 100, message: '' }),
     setConfig: async (cfg) => { setConfigCalls++; lastSetConfigPayload = cfg; return { code: 0 }; },
     sweepStatus: async () => sweepStatusResp,
+    sweepStart: async () => ({ code: 0, start: 1000 }),
     sweepStop: async () => ({ code: 0 }),
   },
 };
@@ -134,7 +137,7 @@ function check(name, cond) { if (cond) { pass++; console.log('  PASS: ' + name);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 (async () => {
-  const ConfigPanel = window.ConfigPanel;
+  let ConfigPanel = window.ConfigPanel;
   const el = id => document.getElementById(id);
 
   // 初始状态: 不轮询 sweep/status (页面加载后无 sweep)
@@ -201,19 +204,18 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   check('IDLE 时状态行隐藏', el('sweep-status-line').style.display === 'none');
   check('IDLE 时 mode 文本被重置(非 Freq)', el('sweep-mode-text').textContent !== 'Freq');
 
-  // 场景 2: 运行态 Addr → mode 文本 'Addr', 进度 done/total
+  // 场景 2: 运行态 Addr → mode 文本 'Addr'
   sweepStatusResp = { code: 0, running: true, mode: 1, current: 1200, total: 9999000, done: 200 };
   await ConfigPanel.updateSweepUI();
   check('运行态 Addr: mode=Addr', el('sweep-mode-text').textContent === 'Addr');
   check('运行态 Addr: current 显示 addr=', el('sweep-current-text').textContent.startsWith('addr='));
-  check('运行态 Addr: 进度 done/total', el('sweep-count-text').textContent === '200/9999000');
   check('运行态 Addr: 状态行显示', el('sweep-status-line').style.display !== 'none');
+  check('运行态 Addr: Send 按钮禁用', el('btn-send').disabled === true);
 
   // 场景 2b: 运行态 Addr + 批次区间
   sweepStatusResp = { code: 0, running: true, mode: 1, current: 1200, total: 9999000, done: 200, batchStart: 990, batchEnd: 1005 };
   await ConfigPanel.updateSweepUI();
   check('运行态 Addr: 批次区间显示', el('sweep-current-text').textContent === 'addr=990-1005');
-  check('运行态 Addr: 区间模式进度不变', el('sweep-count-text').textContent === '200/9999000');
 
   // 场景 2c: 批次区间缺失/单地址 → 回退 current
   sweepStatusResp = { code: 0, running: true, mode: 1, current: 1200, total: 9999000, done: 200, batchStart: 1200, batchEnd: 1200 };
@@ -225,7 +227,6 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await ConfigPanel.updateSweepUI();
   check('运行态 Freq: mode=Freq', el('sweep-mode-text').textContent === 'Freq');
   check('运行态 Freq: current 显示 MHz', el('sweep-current-text').textContent.endsWith(' MHz'));
-  check('运行态 Freq: 进度 done/total', el('sweep-count-text').textContent === '42/1000');
 
   // ===== 新增: sweep 轮询门控 =====
   // 归零沿状态 (IDLE 一轮使 sweepWasRunning=false)
@@ -246,14 +247,59 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   check('停止后关闭 sweep 轮询', ConfigPanel.isSweepPolling() === false);
   check('停止沿通知恢复 /api/status', sweepActiveFlag === false);
 
-  // 手动 stop: 回到运行态 → 点 STOP → 关闭轮询 + 恢复 status
+  // 手动 stop: 回到运行态 → 点 STOP → 设备确认停止 → UI 全部恢复
   sweepStatusResp = { code: 0, running: true, mode: 1, current: 1, total: 10, done: 1 };
   await ConfigPanel.updateSweepUI();
+  check('运行态按钮显示 STOP', el('btn-sweep-toggle').textContent === 'STOP');
+  check('运行态 Send 按钮禁用', el('btn-send').disabled === true);
   sweepActiveFlag = null;
+  sweepStatusResp = { code: 0, running: false, mode: 0, current: 0, total: 0, done: 0 };  // 设备确认已停止
   await el('btn-sweep-toggle')._listeners.click();
-  await sleep(20);  // 等 async handler 完成
+  await sleep(50);  // 等 async handler 完成
   check('手动 STOP 后关闭 sweep 轮询', ConfigPanel.isSweepPolling() === false);
   check('手动 STOP 后恢复 /api/status', sweepActiveFlag === false);
+  check('手动 STOP 后按钮恢复 START', el('btn-sweep-toggle').textContent === 'START');
+  check('手动 STOP 后状态行隐藏', el('sweep-status-line').style.display === 'none');
+  check('手动 STOP 后 Send 按钮恢复可用', el('btn-send').disabled === false);
+  check('手动 STOP 后 mode 文本复位', el('sweep-mode-text').textContent === '--');
+
+  // ===== 新增: start 失败 (设备忙) → 以设备端状态同步 =====
+  // 页面误以为空闲 (按钮 START), 设备实际在扫: 点 START 被拒 → 按钮变 STOP
+  sweepStatusResp = { code: 0, running: true, mode: 1, current: 5, total: 10, done: 5 };
+  window.API.sweepStart = async () => ({ code: 3, detail: -2 });  // ERR_BUSY
+  await el('btn-sweep-toggle')._listeners.click();
+  await sleep(50);
+  check('start 失败(设备忙)后按钮变 STOP', el('btn-sweep-toggle').textContent === 'STOP');
+  check('start 失败(设备忙)后开启轮询', ConfigPanel.isSweepPolling() === true);
+  check('start 失败(设备忙)后暂停 status', sweepActiveFlag === true);
+
+  // ===== 新增: stop 请求丢失/失败 (设备仍在扫) → 保持 STOP 可重试 =====
+  window.API.sweepStop = async () => { throw new Error('network lost'); };
+  await el('btn-sweep-toggle')._listeners.click();
+  await sleep(1500);  // 3 次重试 × 400ms 间隔 + 收尾
+  check('stop 失败后按钮保持 STOP', el('btn-sweep-toggle').textContent === 'STOP');
+  check('stop 失败后轮询保持开启', ConfigPanel.isSweepPolling() === true);
+  check('stop 失败后 Send 保持禁用', el('btn-send').disabled === true);
+  window.API.sweepStop = async () => ({ code: 0 });  // 恢复 stub
+
+  // ===== 新增: 页面加载时设备已在扫描 (刷新场景) → 初始同步 =====
+  // 模拟用户刷新页面: 重新加载模块, 设备端 sweep 仍在运行
+  sweepStatusResp = { code: 0, running: true, mode: 2, current: 152675, total: 1000, done: 10 };
+  sweepActiveFlag = null;
+  eval(cfgSrc);  // 重新执行 config-panel.js (fresh 模块状态)
+  await sleep(100);  // 等 init 的 refreshPanel + updateSweepUI 完成
+  const CP = window.ConfigPanel;
+  check('刷新检测: 初始同步开启 sweep 轮询', CP.isSweepPolling() === true);
+  check('刷新检测: 初始同步暂停 /api/status', sweepActiveFlag === true);
+  check('刷新检测: 按钮显示 STOP', el('btn-sweep-toggle').textContent === 'STOP');
+  check('刷新检测: 状态行显示', el('sweep-status-line').style.display !== 'none');
+  check('刷新检测: Send 按钮禁用', el('btn-send').disabled === true);
+  // 设备随后停止 → 5s 兜底校准/轮询检测到 → UI 自动恢复
+  sweepStatusResp = { code: 0, running: false, mode: 0, current: 0, total: 0, done: 0 };
+  await CP.updateSweepUI();
+  check('刷新检测: 设备停止后按钮恢复 START', el('btn-sweep-toggle').textContent === 'START');
+  check('刷新检测: 设备停止后关闭轮询', CP.isSweepPolling() === false);
+  ConfigPanel = CP;  // 后续 main.js 测试引用重载后的模块
 
   // ===== 新增: Preset 语义 =====
   store['beeper_tx_presets'] = JSON.stringify({ p1: { freqKHz: 152675, txPower: 90 } });
@@ -300,11 +346,24 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await sleep(20);
   check('sweep 退出立即刷新一次 /api/status', getStatusCalls === 1);
 
-  // 日志兜底: 看到 SWEEP START (其他设备启动) → 开启轮询
+  // 日志兜底: 首次拉取全量 (getLog) + 看到 SWEEP START → 开启轮询
   ConfigPanel.setSweepPolling(false);
-  getLogResp = 'boot ok\nSWEEP START mode=addr start=1000\n';
+  getLogResp = { seq: 7, wrapped: false, lines: ['boot ok', 'SWEEP START mode=addr start=1000'] };
   await sleep(2200);  // pollLog 每 2s 触发
+  check('日志首次全量拉取 (getLog)', getLogAfterCalls.length === 0);
   check('日志兜底: SWEEP START 开启轮询', ConfigPanel.isSweepPolling() === true);
+
+  // ===== 新增: 日志增量拉取 (getLogAfter) =====
+  getLogAfterCalls = [];
+  getLogResp = { seq: 9, wrapped: false, lines: ['SWEEP addr 1000-1054 POCSAG done=55/2097152'] };
+  await sleep(2200);  // 下一轮: 携带上次 seq 增量拉取
+  check('日志增量拉取携带 seq=7', getLogAfterCalls.length === 1 && getLogAfterCalls[0] === 7);
+
+  // ===== 新增: 环形覆盖 (wrapped) → 全量重绘 =====
+  getLogAfterCalls = [];
+  getLogResp = { seq: 60, wrapped: true, lines: ['line1', 'line2', 'line3'] };
+  await sleep(2200);
+  check('日志 wrapped 后继续增量拉取', getLogAfterCalls.length === 1 && getLogAfterCalls[0] === 9);
 
   console.log(`\n结果: ${pass} PASS, ${fail} FAIL`);
   process.exit(fail ? 1 : 0);

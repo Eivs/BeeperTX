@@ -298,6 +298,19 @@ TxConfig api_getConfig();
 void api_getLog(char* buf, size_t size);
 
 /**
+ * @brief 增量获取日志: 返回写序号 > after 的行 (换行分隔)。
+ *        客户端记录上次返回的 seqOut, 下轮传入 after, 只拉新行;
+ *        wrappedOut=true 表示客户端序号已滚出环形窗口, 需全量重绘。
+ * @param buf        输出缓冲区
+ * @param size       缓冲区大小 (含结尾 '\0')
+ * @param after      客户端已持有的最大写序号 (0 = 全量)
+ * @param seqOut     可选: 最新写序号
+ * @param wrappedOut 可选: 环形覆盖导致行丢失
+ */
+void api_getLogAfter(char* buf, size_t size, uint32_t after,
+                     uint32_t* seqOut, bool* wrappedOut);
+
+/**
  * @brief 向日志缓冲区追加一行。
  */
 void api_log(const char* line);

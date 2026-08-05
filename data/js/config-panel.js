@@ -350,21 +350,40 @@
         window.Terminal.log('SWEEP ' + mode + ' started: ' + resp.start, 'info');
       } else {
         window.Terminal.log('SWEEP start failed: code=' + resp.code, 'error');
+        // 设备可能在运行中 (ERR_BUSY, 其他页面/串口启动): 以设备端状态同步 UI
+        await updateSweepUI();
       }
     } catch(e) {
       window.Terminal.log('SWEEP error: ' + e.message, 'error');
     }
   }
 
+  /**
+   * 停止扫描。发射期间网络可能抖动导致 stop 请求丢失, 重试至多 3 次,
+   * 每次以设备端 sweep/status 为准确认; 结束后无论结果如何都以设备端
+   * 真实状态恢复 UI (停止成功 → 全部控件恢复; 失败 → 保持 STOP 可重试)。
+   */
   async function handleSweepStop() {
-    try {
-      await window.API.sweepStop();
-      sweepPolling = false;  // 停止轮询 sweep/status
-      if (window.__setSweepActive) window.__setSweepActive(false);  // 恢复 status 轮询 (立即刷新)
-      window.Terminal.log('SWEEP stopped', 'warn');
-    } catch(e) {
-      window.Terminal.log('SWEEP stop error: ' + e.message, 'error');
+    let stopped = false;
+    for (let attempt = 1; attempt <= 3 && !stopped; attempt++) {
+      try {
+        await window.API.sweepStop();
+        const s = await window.API.sweepStatus();
+        // 状态读取失败 (s 为空) 视为未停止, 继续重试
+        stopped = !!(s && s.running !== true && s.running !== 'true');
+      } catch(e) {
+        window.Terminal.log('SWEEP stop error: ' + e.message, 'error');
+      }
+      if (!stopped && attempt < 3) await new Promise(r => setTimeout(r, 400));
     }
+    if (stopped) {
+      window.Terminal.log('SWEEP stopped', 'warn');
+    } else {
+      window.Terminal.log('SWEEP stop failed: device still running', 'error');
+    }
+    // 强制走停止沿处理 (关闭 sweep 轮询 + 恢复 status 轮询 + 恢复控件)
+    sweepWasRunning = true;
+    await updateSweepUI();
   }
 
   /** 启用/禁用配置面板控件 (扫中禁用) */
@@ -415,15 +434,16 @@
     if (!running) {
       const modeText = document.getElementById('sweep-mode-text');
       const curText  = document.getElementById('sweep-current-text');
-      const cntText  = document.getElementById('sweep-count-text');
       if (modeText) modeText.textContent = '--';
       if (curText)  curText.textContent  = '--';
-      if (cntText)  cntText.textContent  = '0';
     }
   }
 
-  /** 由 main.js 定时轮询调用, 刷新扫描状态 UI (仅 sweepPolling 时调用) */
+  /** 由 main.js 定时轮询调用, 刷新扫描状态 UI (sweep 进行中高频, 空闲低频校准) */
+  let sweepUiSyncing = false;
   async function updateSweepUI() {
+    if (sweepUiSyncing) return;  // 并发保护: 1.5s 高频轮询与 5s 兜底校准可能重叠
+    sweepUiSyncing = true;
     try {
       const s = await window.API.sweepStatus();
       if (!s || s.code) return;
@@ -451,7 +471,6 @@
       // 仅运行态按 mode 显示 (mode: 1=Addr, 2=Freq)
       const modeText = document.getElementById('sweep-mode-text');
       const curText  = document.getElementById('sweep-current-text');
-      const cntText  = document.getElementById('sweep-count-text');
 
       if (modeText) {
         modeText.textContent = (s.mode === 1) ? 'Addr' : 'Freq';
@@ -471,11 +490,8 @@
           curText.textContent = freqMHz + ' MHz';
         }
       }
-      if (cntText) {
-        // 进度: done/total (规格 §9.4)
-        cntText.textContent = s.done + '/' + s.total;
-      }
     } catch(e) { /* ignore poll errors */ }
+    finally { sweepUiSyncing = false; }
   }
 
   // ---- 初始化入口 ----
@@ -494,6 +510,10 @@
 
     // 初始加载
     refreshPanel();
+
+    // 初始状态同步: 设备可能已在扫描中 (本页刷新/其他设备启动), 直接对齐 UI,
+    // 避免刷新后误以为空闲 (按钮显示 START, 点启动报 ERR_BUSY)。
+    updateSweepUI();
 
     window.ConfigPanel = {
       refresh: refreshPanel,

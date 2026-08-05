@@ -150,4 +150,7 @@ private:
 
   /** 检查是否达到频率上限 */
   bool isFreqMax() const;
+
+  /** 打印进度日志: "<prefix> done=<done>/<total>" (terminal-output 进度显示) */
+  void logProgress(const char* prefix);
 };

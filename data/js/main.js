@@ -72,6 +72,12 @@
       }
     }, 1500);
 
+    // 扫描状态兜底校准 (每 5s, 无条件): 其他设备/串口启动的 sweep 也能被
+    // 检测到 (本页未主动 start 时无高频轮询); updateSweepUI 内有并发保护。
+    setInterval(() => {
+      if (window.ConfigPanel) window.ConfigPanel.updateSweepUI();
+    }, 5000);
+
     // 日志轮询 (每 2s)
     setInterval(pollLog, 2000);
 
@@ -81,30 +87,27 @@
     }, 10000);
   }
 
-  // ---- 日志轮询 ----
+  // ---- 日志轮询 (增量拉取) ----
+  // 后端 /api/log 带写序号: 首次全量, 之后 ?after=<seq> 只返回新行,
+  // 避免每次 2s 轮询都传输整个环形缓冲 (sweep 高频日志下尤为明显)。
+  // wrapped=true 表示客户端序号已滚出环形窗口 (被覆盖), 清屏全量重绘。
+  let lastLogSeq = null;
+
   async function pollLog() {
     try {
-      const text = await window.API.getLog();
-      if (!text || text.code) return;
-      const lines = text.split('\n').filter(l => l.trim());
-      if (!window._lastLogLines) window._lastLogLines = [];
+      const text = (lastLogSeq === null)
+        ? await window.API.getLog()
+        : await window.API.getLogAfter(lastLogSeq);
+      if (!text || text.code || !Array.isArray(text.lines)) return;
 
-      // 判断上次拉取的内容是否是当前内容的连续前缀 (环形缓冲无回绕):
-      // 是 → 只追加新增行; 否 → 缓冲已回绕 (旧行被挤出), 清屏全量重绘。
-      // 原实现用 lines.length < prevLen 判回绕: 缓冲区写满后长度恒为 50,
-      // 永不为 true → 追加循环一次都不执行, 新日志从此不再显示。
-      let isPrefix = lines.length >= window._lastLogLines.length;
-      for (let i = 0; isPrefix && i < window._lastLogLines.length; i++) {
-        if (lines[i] !== window._lastLogLines[i]) isPrefix = false;
-      }
-
-      const start = isPrefix ? window._lastLogLines.length : 0;
-      if (!isPrefix) {
+      const lines = text.lines.filter(l => l.trim());
+      const wrapped = (text.wrapped === true);
+      if (wrapped) {
         window.Terminal.clear();
         window.Terminal.log('--- log buffer wrapped, redrawing ---', 'system');
       }
 
-      for (let i = start; i < lines.length; i++) {
+      for (let i = 0; i < lines.length; i++) {
         const l = lines[i];
         let cls = 'system';
         if (l.includes('TX>'))      cls = 'tx';
@@ -113,13 +116,13 @@
         else if (l.includes('OK'))  cls = 'rx';
         window.Terminal.log(l, cls);
       }
-      window._lastLogLines = lines;
+      lastLogSeq = (typeof text.seq === 'number') ? text.seq : lastLogSeq;
 
       // sweep 兜底检测: 本页面未主动 start (其他设备/串口启动) 时, 从新增
       // 日志行发现 sweep 开始 → 开启状态轮询。关闭不做: 轮询自身发现
       // running=false 或本页 stop 会可靠关闭, 避免历史缓冲误判。
-      if (start < lines.length) {
-        const joined = lines.slice(start).join('\n');
+      if (lines.length && !wrapped) {
+        const joined = lines.join('\n');
         if (joined.includes('SWEEP START') &&
             window.ConfigPanel && window.ConfigPanel.setSweepPolling) {
           window.ConfigPanel.setSweepPolling(true);
