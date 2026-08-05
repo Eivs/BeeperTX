@@ -149,6 +149,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const baudActive = () => { const a = baudGroup.querySelector('button.active'); return a ? a.dataset.value : null; };
   check('初始 (pocsag): baud 选项 512,1200', baudVals() === '512,1200');
   check('初始 (pocsag): 默认 1200 激活', baudActive() === '1200');
+  // 频率输入框: 后端 kHz 152675 → 显示 MHz 152.675
+  check('频率输入框显示 MHz', el('inp-freq').value === '152.675');
 
   // 切到 flex → 选项 1600/2400/3200, 默认 1600
   const flexBtn = encGroup._buttons.find(b => b.dataset.value === 'flex');
@@ -326,6 +328,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await el('sel-preset')._listeners.change();  // 选中即加载
   check('选中 preset 即触发加载 (setConfig)', setConfigCalls === 1);
   check('加载后下拉保持选中', el('sel-preset').value === 'p1');
+  // 输入框恒为 MHz 显示 (初始 applyConfig 换算 152675 kHz → 152.675)
+  check('输入框保持 MHz 显示', el('inp-freq').value === '152.675');
 
   // Save: 未选中 → 提示名称 (prompt), 取消则不新建
   confirmCalls = 0;
@@ -349,6 +353,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await el('btn-preset-save')._listeners.click();
   check('Save 新建: 创建新 preset', JSON.parse(store['beeper_tx_presets']).p2 !== undefined);
   check('Save 新建: 新项保持选中', el('sel-preset').value === 'p2');
+  // preset 内部与后端一致存 kHz (输入框 MHz 152.675 → 152675)
+  check('preset 内部存 kHz', JSON.parse(store['beeper_tx_presets']).p2.freqKHz === 152675);
 
   // ===== main.js: status 轮询门控 + 日志兜底 =====
   const mainSrc = fs.readFileSync(path.join(__dirname, '../data/js/main.js'), 'utf8');

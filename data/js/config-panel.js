@@ -48,6 +48,8 @@
       if (!el) return;
       el.addEventListener('change', () => {
         let val = cfg.type === 'number' ? Number(el.value) : el.value;
+        // 频率输入为 MHz (UI 显示单位), 提交时转 kHz (后端存储单位)
+        if (cfg.field === 'freqKHz') val = Math.round(val * 1000);
         updateField(cfg.field, val);
       });
     });
@@ -175,9 +177,9 @@
     updateEncodingUI(cfg.encoding);  // FLEX: 隐藏 Phase + Tone
 
     // 输入框
-    setInput('inp-freq',     cfg.freqKHz);
-    setInput('inp-power',    cfg.txPower);
-    setInput('inp-addr',     cfg.address);
+    setInput('inp-freq',  (cfg.freqKHz / 1000).toFixed(3));  // kHz → MHz 显示
+    setInput('inp-power', cfg.txPower);
+    setInput('inp-addr',  cfg.address);
   }
 
   function setBtnGroup(field, val) {
@@ -232,7 +234,12 @@
     const inputMap = { 'inp-freq': 'freqKHz', 'inp-power': 'txPower', 'inp-addr': 'address' };
     Object.entries(inputMap).forEach(([id, field]) => {
       const el = document.getElementById(id);
-      if (el && el.value !== '') cfg[field] = Number(el.value);
+      if (el && el.value !== '') {
+        let v = Number(el.value);
+        // preset 内部与后端一致存 kHz: 频率输入为 MHz, 保存时转换
+        if (field === 'freqKHz') v = Math.round(v * 1000);
+        cfg[field] = v;
+      }
     });
     const msg = document.getElementById('inp-message');
     if (msg && msg.value) cfg.message = msg.value;
