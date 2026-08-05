@@ -41,7 +41,14 @@ bool isBaudRateValid(EncodingType enc, uint16_t br) {
 }
 
 bool isPocsagAddrValid(uint32_t addr) {
-  return addr <= 0x1FFFFF;  // 21-bit
+  // 0 非法: 无寻呼机配地址 0 (用户实测地址 0 触发 FLEX 编码失败→无限重试)
+  return addr >= 1 && addr <= 0x1FFFFF;  // 21-bit
+}
+
+/** FLEX capcode 合法性 (短地址 1..1933312 / 长地址 2101249..4297068542) */
+bool isFlexCapcodeValid(uint32_t cap) {
+  return (cap >= 1 && cap <= 1933312) ||
+         (cap >= 2101249 && cap <= 4297068542);
 }
 
 bool isTxPowerValid(uint8_t pwr) {
@@ -267,6 +274,12 @@ void CommandDispatcher::handleSetConfig(const CmdRequest* req, CmdResponse* resp
     log("SET_CONFIG: invalid POCSAG address");
     return;
   }
+  if (c.encoding == EncodingType::FLEX && !isFlexCapcodeValid(c.address)) {
+    resp->cmd = CmdID::CMD_SET_CONFIG; resp->code = RespCode::ERR_PARAM;
+    resp->detail = -3;
+    log("SET_CONFIG: invalid FLEX capcode");
+    return;
+  }
   if (!isTxPowerValid(c.txPower)) {
     resp->cmd = CmdID::CMD_SET_CONFIG; resp->code = RespCode::ERR_PARAM;
     resp->detail = -4;
@@ -338,6 +351,20 @@ void CommandDispatcher::handleTransmit(const CmdRequest* req, CmdResponse* resp)
   if (m_sweeper && m_sweeper->isRunning()) {
     resp->cmd = CmdID::CMD_TRANSMIT; resp->code = RespCode::ERR_BUSY;
     resp->detail = -10;
+    return;
+  }
+
+  // 地址校验 (0 非法; FLEX capcode 范围) — 防止非法地址入队后编码失败
+  // 被 API loop 误判为队列满而无限重试刷日志 (用户实测地址 0 触发)
+  if (m_config.address == 0) {
+    resp->cmd = CmdID::CMD_TRANSMIT; resp->code = RespCode::ERR_PARAM;
+    resp->detail = -5;
+    return;
+  }
+  if (m_config.encoding == EncodingType::FLEX &&
+      !isFlexCapcodeValid(m_config.address)) {
+    resp->cmd = CmdID::CMD_TRANSMIT; resp->code = RespCode::ERR_PARAM;
+    resp->detail = -6;
     return;
   }
 
@@ -734,6 +761,14 @@ void CommandDispatcher::loop() {
 
     if (m_tx->send(makeTxConfig())) {
       m_txCount++;
+    } else if (m_tx->lastEncodeError()) {
+      // 编码失败 (如地址 0 非法 capcode): 确定性错误, 重试不会成功,
+      // 丢弃防无限重试风暴 (原实现一律当队列满 → setPendingTx 无限循环刷日志)
+      if (msgOverride) {
+        strncpy(m_config.message, savedMsg, sizeof(m_config.message) - 1);
+      }
+      log("TX dropped (encode failed)");
+      return;
     } else {
       // 队列满 (可能 Sweeper 占用): 恢复消息并重新挂起待发射, 下帧重试
       if (msgOverride) {

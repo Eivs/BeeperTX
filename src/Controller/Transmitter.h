@@ -72,6 +72,13 @@ public:
   /** 清除中断标志 */
   void clearAbort() { m_abort = false; }
 
+  /**
+   * @brief 上次 send() 是否因编码失败返回 false (区别于队列满)。
+   *        编码失败 (如地址 0 非法 capcode) 是确定性错误, 重试不会成功,
+   *        调用方 (API loop) 应丢弃而非无限重试。
+   */
+  bool lastEncodeError() const { return m_lastEncodeError; }
+
   // ---- 静态工具 ----
   static int bitTimeUs(int baudRate);
   static int preambleBits(int baudRate);
@@ -109,6 +116,7 @@ private:
   TaskHandle_t  m_task  = nullptr;
   volatile bool m_txActive = false;
   volatile bool m_abort    = false;
+  bool m_lastEncodeError = false;  //!< 最近一次 send() 是否编码失败 (确定性, 不重试)
 
   bool ensureTask();
   static void txTaskEntry(void* arg);

@@ -34,6 +34,7 @@ int Sweeper::start(const Config& cfg) {
   if (m_mode != IDLE)  return -1;
 
   if (cfg.mode == ADDR_SWEEP) {
+    if (cfg.addrStart < 1)                 return -2;  // 地址 0 非法 (无寻呼机配 0)
     if (cfg.addrStart > cfg.addrEnd)           return -2;  // 起始 > 上限
     if (cfg.addrEnd > 0x1FFFFF)                return -2;  // 超出 POCSAG 21-bit
   }

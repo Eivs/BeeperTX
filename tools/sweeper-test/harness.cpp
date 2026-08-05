@@ -184,6 +184,8 @@ int main() {
     sw.setTransmitter(&tx);
     Sweeper::Config c = addrCfg(2000, 1000);  // start > end
     check("addrStart>addrEnd 返回 -2", sw.start(c) == -2);
+    Sweeper::Config c0 = addrCfg(0, 100);  // 地址 0 非法
+    check("addrStart=0 返回 -2", sw.start(c0) == -2);
     Sweeper::Config c2 = addrCfg(1000, 1016);
     check("正常 start 返回 0", sw.start(c2) == 0);
     check("重复 start 返回 -1", sw.start(c2) == -1);

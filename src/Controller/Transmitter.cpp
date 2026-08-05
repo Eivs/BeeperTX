@@ -165,6 +165,7 @@ void Transmitter::sendBytes(const uint8_t* data, size_t len, int bitTimeUs, bool
 // ============================================================
 bool Transmitter::send(const Config& cfg) {
   clearAbort();
+  m_lastEncodeError = false;
 
   // ---- FLEX: 预编码 → sendFlexRaw ----
   if (cfg.encoding == EncodingType::FLEX) {
@@ -198,6 +199,7 @@ bool Transmitter::send(const Config& cfg) {
     if (encoder.hasError()) {
       Serial.printf("FLEX encode error: %s\n", encoder.getErrorString());
       // 不计数: 实际未发射 (与 POCSAG 路径一致 — 成功才在 impl 里 +1)
+      m_lastEncodeError = true;  // 编码失败是确定性错误, 调用方不应重试
       return false;
     }
     bool invert = (cfg.phase == PhaseType::NORMAL);
