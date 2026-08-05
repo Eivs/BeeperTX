@@ -75,16 +75,12 @@
           </div>
         </fieldset>
 
-        <!-- 码率 -->
+        <!-- 码率 (选项随编码切换: POCSAG 512/1200, FLEX 1600/2400/3200) -->
         <fieldset class="cfg-group" id="group-baud">
           <legend>Baud Rate</legend>
           <div class="btn-group" data-field="baudRate">
             <button class="btn btn-sm" data-value="512">512</button>
             <button class="btn btn-sm" data-value="1200">1200</button>
-            <button class="btn btn-sm" data-value="1600">1600</button>
-            <button class="btn btn-sm" data-value="2400">2400</button>
-            <button class="btn btn-sm" data-value="3200">3200</button>
-            <button class="btn btn-sm" data-value="6400">6400</button>
           </div>
         </fieldset>
 
@@ -125,10 +121,9 @@
           <legend>Presets</legend>
           <div class="btn-group" style="margin-top:8px;">
             <button id="btn-preset-save" class="btn btn-ghost btn-sm">Save</button>
-            <button id="btn-preset-load" class="btn btn-ghost btn-sm">Load</button>
             <button id="btn-preset-del" class="btn btn-ghost btn-sm" style="color:#e74c3c">Del</button>
           </div>
-          <select id="sel-preset" class="form-control" style="margin-top:4px;width:100%;">
+          <select id="sel-preset" class="form-control" style="margin-top:4px;width:100%;" title="Load on select">
             <option value="">-- saved presets --</option>
           </select>
         </fieldset>

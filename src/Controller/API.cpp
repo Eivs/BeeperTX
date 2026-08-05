@@ -34,9 +34,10 @@ bool isFreqValid(uint32_t kHz) {
   return kHz >= 119000 && kHz <= 1050000;
 }
 
-bool isBaudRateValid(uint16_t br) {
-  return br == 512 || br == 1200 || br == 1600 ||
-         br == 2400 || br == 3200 || br == 6400;
+bool isBaudRateValid(EncodingType enc, uint16_t br) {
+  // 码率按编码区分: POCSAG 512/1200, FLEX 1600/2400/3200
+  if (enc == EncodingType::POCSAG) return br == 512 || br == 1200;
+  return br == 1600 || br == 2400 || br == 3200;
 }
 
 bool isPocsagAddrValid(uint32_t addr) {
@@ -99,7 +100,7 @@ public:
   // ---- 查询 ----
   TxConfig getConfig() const { return m_config; }
   void triggerScan() { m_queue.triggerScan(); }
-  const char* scanCache() const { return m_queue.scanCache(); }
+  void getScanCache(char* buf, size_t size) { m_queue.getScanCache(buf, size); }
 
   // ---- 日志 ----
   void log(const char* line) {
@@ -111,7 +112,7 @@ public:
   void getLog(char* buf, size_t size) { m_log.get(buf, size); }
 
   // ---- 快捷入口 ----
-  RespCode sweepStartSimple(uint8_t mode, uint32_t* startOut);
+  RespCode sweepStartSimple(uint8_t mode, uint32_t* startOut, int* detailOut);
 
 private:
   // 依赖 (构造注入, 显式设置)
@@ -234,6 +235,13 @@ void CommandDispatcher::handleSetConfig(const CmdRequest* req, CmdResponse* resp
     resp->detail = -10;
     return;
   }
+  // 发射中 (队列积压或 txTask 位敲击) 修改频率/功率会与 Direct TX 冲突:
+  // Si4463 处于 TX 时 CTS 超时忙等 (每次最多 400ms), 命令静默失败。
+  if (m_tx && m_tx->isBusy()) {
+    resp->cmd = CmdID::CMD_SET_CONFIG; resp->code = RespCode::ERR_BUSY;
+    resp->detail = -11;
+    return;
+  }
 
   const TxConfig& c = req->setConfig;
 
@@ -243,7 +251,7 @@ void CommandDispatcher::handleSetConfig(const CmdRequest* req, CmdResponse* resp
     log("SET_CONFIG: invalid freq");
     return;
   }
-  if (!isBaudRateValid(c.baudRate)) {
+  if (!isBaudRateValid(c.encoding, c.baudRate)) {
     resp->cmd = CmdID::CMD_SET_CONFIG; resp->code = RespCode::ERR_PARAM;
     resp->detail = -2;
     log("SET_CONFIG: invalid baudRate");
@@ -344,6 +352,13 @@ void CommandDispatcher::handleTransmit(const CmdRequest* req, CmdResponse* resp)
 void CommandDispatcher::handleAbort(const CmdRequest* req, CmdResponse* resp) {
   resp->cmd  = CmdID::CMD_ABORT;
   resp->code = RespCode::OK;
+  // 扫描运行中: 整体停止 (stop() 内部先中止发射, 再恢复频率);
+  // 否则仅中止当前发射 (清空队列 + 设 abort 标志, ≤1 bit 内停止)。
+  if (m_sweeper && m_sweeper->isRunning()) {
+    m_sweeper->stop();
+  } else if (m_tx) {
+    m_tx->abortTx();
+  }
 }
 
 // ============================================================
@@ -470,6 +485,30 @@ void CommandDispatcher::handleSweepStart(const CmdRequest* req, CmdResponse* res
     resp->code = RespCode::ERR_PARAM;
     resp->detail = -4;
     return;
+  }
+
+  // 覆盖字段范围校验 (web 入口直接填 sweepStart, 无串口式解析校验;
+  // 越界值强转会静默当 FLEX/其他协议跑)
+  if ((req->sweepStart.encoding   >= 0 && req->sweepStart.encoding   > 1) ||
+      (req->sweepStart.phase      >= 0 && req->sweepStart.phase      > 1) ||
+      (req->sweepStart.tone       >= 0 && req->sweepStart.tone       > 3) ||
+      (req->sweepStart.msgType    >= 0 && req->sweepStart.msgType    > 1) ||
+      (req->sweepStart.intervalMs >= 0 &&
+       (req->sweepStart.intervalMs < 1 || req->sweepStart.intervalMs > 60000))) {
+    resp->code = RespCode::ERR_PARAM;
+    resp->detail = -5;
+    return;
+  }
+  // 码率按最终生效 encoding 校验 (未指定时继承当前配置)
+  if (req->sweepStart.baudRate >= 0) {
+    EncodingType effEnc = (req->sweepStart.encoding >= 0)
+        ? static_cast<EncodingType>(req->sweepStart.encoding)
+        : m_config.encoding;
+    if (!isBaudRateValid(effEnc, (uint16_t)req->sweepStart.baudRate)) {
+      resp->code = RespCode::ERR_PARAM;
+      resp->detail = -5;
+      return;
+    }
   }
 
   // 构建 Sweeper 配置 — 发射参数从当前 m_config 继承, 覆盖字段可覆盖
@@ -603,7 +642,8 @@ void CommandDispatcher::dispatch(const CmdRequest* req, CmdResponse* resp) {
 // api_sweepStartSimple — Web/串口快捷入口 (规格 §8.2)
 // ============================================================
 
-RespCode CommandDispatcher::sweepStartSimple(uint8_t mode, uint32_t* startOut) {
+RespCode CommandDispatcher::sweepStartSimple(uint8_t mode, uint32_t* startOut,
+                                             int* detailOut) {
   CmdRequest req; CmdResponse resp;
   memset(&req, 0, sizeof(req));
   req.cmd = CmdID::CMD_SWEEP_START;
@@ -617,6 +657,7 @@ RespCode CommandDispatcher::sweepStartSimple(uint8_t mode, uint32_t* startOut) {
   req.sweepStart.intervalMs = -1;
   dispatch(&req, &resp);
 
+  if (detailOut) *detailOut = resp.detail;
   if (startOut && resp.code == RespCode::OK) {
     TxConfig cfg = getConfig();
     *startOut = (mode == 0) ? cfg.address : cfg.freqKHz;
@@ -744,8 +785,8 @@ void api_setRadioReady(bool ready) {
   g_dispatcher.setRadioReady(ready);
 }
 
-RespCode api_sweepStartSimple(uint8_t mode, uint32_t* startOut) {
-  return g_dispatcher.sweepStartSimple(mode, startOut);
+RespCode api_sweepStartSimple(uint8_t mode, uint32_t* startOut, int* detailOut) {
+  return g_dispatcher.sweepStartSimple(mode, startOut, detailOut);
 }
 
 TxConfig api_getConfig() {
@@ -768,8 +809,8 @@ void api_triggerScan() {
   g_dispatcher.triggerScan();
 }
 
-const char* api_getScanCache() {
-  return g_dispatcher.scanCache();
+void api_getScanCache(char* buf, size_t size) {
+  g_dispatcher.getScanCache(buf, size);
 }
 
 } // extern "C"

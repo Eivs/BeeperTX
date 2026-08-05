@@ -41,7 +41,11 @@ void api_dispatch(const CmdRequest* req, CmdResponse* resp) {
 // 其他 API 符号 (SerialConsole.cpp 可能引用)
 TxConfig api_getConfig() { TxConfig c; memset(&c, 0, sizeof(c)); c.address = 1000; c.freqKHz = 152675; return c; }
 void api_log(const char*) {}
-const char* api_getScanCache() { return "[{\"ssid\":\"TestAP\",\"rssi\":-45}]"; }
+void api_getScanCache(char* buf, size_t size) {
+  if (!buf || size == 0) return;
+  strncpy(buf, "[{\"ssid\":\"TestAP\",\"rssi\":-45}]", size - 1);
+  buf[size - 1] = '\0';
+}
 
 // ---- 断言 ----
 int g_pass = 0, g_fail = 0;

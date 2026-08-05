@@ -280,9 +280,10 @@ void api_setRadioReady(bool ready);
  * @brief Web/串口快捷入口 (规格 §8.2): 从当前 TxConfig 填充扫描配置并启动。
  * @param mode     0=追码, 1=追频
  * @param startOut 可选: 实际起始值 (addrStart / freqStartKHz)
+ * @param detailOut 可选: 失败时的 detail 码 (ERR_BUSY/ERR_PARAM/ERR_HW 细分)
  * @return RespCode (OK=成功, ERR_BUSY/ERR_PARAM/ERR_HW=失败)
  */
-RespCode api_sweepStartSimple(uint8_t mode, uint32_t* startOut);
+RespCode api_sweepStartSimple(uint8_t mode, uint32_t* startOut, int* detailOut);
 
 /**
  * @brief 获取当前发射配置的快照 (用于 Web/串口日志)。
@@ -313,10 +314,12 @@ void api_loop();
 void api_triggerScan();
 
 /**
- * @brief 获取缓存的 WiFi 扫描结果 (JSON 数组字符串)。
- *        直接返回内部缓存引用, 无长度限制。
+ * @brief 拷贝缓存的 WiFi 扫描结果 (JSON 数组字符串) 到调用方缓冲。
+ * @param buf  输出缓冲区
+ * @param size 缓冲区大小 (含结尾 '\0'); 结果截断到 size-1
+ * 线程安全: 内部临界区读取, 不返回内部指针 (防并发重分配 use-after-free)。
  */
-const char* api_getScanCache();
+void api_getScanCache(char* buf, size_t size);
 
 #ifdef __cplusplus
 }

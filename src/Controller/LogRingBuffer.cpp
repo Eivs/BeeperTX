@@ -35,8 +35,3 @@ void LogRingBuffer::get(char* buf, size_t size) {
   buf[pos] = '\0';
   taskEXIT_CRITICAL(&m_mux);
 }
-
-LogRingBuffer& LogRingBuffer::instance() {
-  static LogRingBuffer s_log;
-  return s_log;
-}

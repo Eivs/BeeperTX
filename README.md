@@ -158,7 +158,7 @@ AP 模式下内置 Captive Portal DNS，手机连接后自动弹出配网页面�
   SET key=value ...     Set TX parameters
      freq=<kHz>         Frequency (119000-1050000)
      pwr=<0-127>        TX power
-     baud=<rate>        Baud rate (512/1200/1600/2400/3200/6400)
+     baud=<rate>        Baud rate (POCSAG: 512/1200, FLEX: 1600/2400/3200)
      addr=<n>           Pager address/capcode
      encoding=pocsag|flex
      phase=norm|inv     Phase (normal/inverted)
@@ -242,7 +242,7 @@ OK CONFIG encoding=pocsag phase=norm tone=D msgType=alpha freq=152675kHz pwr=127
 |------|--------|------|
 | `freq` | 119000–1050000 (kHz) | `freq=153950` |
 | `pwr` | 0–127 | `pwr=100` |
-| `baud` | 512 / 1200 / 1600 / 2400 / 3200 / 6400 | `baud=2400` |
+| `baud` | 512 / 1200 (POCSAG); 1600 / 2400 / 3200 (FLEX) | `baud=2400` |
 | `addr` | POCSAG: 0–2097151, FLEX: CAPCODE | `addr=12345` |
 | `encoding` | `pocsag` / `flex` | `encoding=flex` |
 | `phase` | `norm` / `inv` | `phase=inv` |
@@ -397,7 +397,7 @@ ERR <CMD> code=<N> detail=<M>
 | txPower | 0–127 | 127 | PA 功率 (127=+20dBm) |
 | phase | NORMAL / INVERTED | NORMAL | FSK 相位极性 |
 | tone | A / B / C / D | D | POCSAG 铃音/功能码 |
-| baudRate | 512/1200/1600/2400/3200/6400 | 1200 | 码率 (bps) |
+| baudRate | POCSAG: 512/1200, FLEX: 1600/2400/3200 | 1200 | 码率 (bps) |
 | msgType | NUMERIC / ALPHANUMERIC | ALPHANUMERIC | 消息类型 |
 | address | 0–2097151 (POCSAG) | 1000 | 寻呼地址 / CAPCODE |
 | message | UTF-8, 最大 255 字节 | "BeeperTX OK" | 消息内容 |
@@ -667,7 +667,7 @@ encoder.encode(cfg.address, (const char*)mixed, FlexEncoder::ALPHA);
 
 | 特性 | POCSAG | FLEX |
 |------|--------|------|
-| 速率 | 512 / 1200 / 2400 bps | 1600 / 3200 / 6400 bps |
+| 速率 | 512 / 1200 bps | 1600 / 2400 / 3200 bps |
 | 前导码 | 576 bits 交替 1/0 | ERS 35 次 + S1 同步 |
 | 纠错 | BCH(31,21) | BCH(31,21) + 块交织 |
 | 地址 | 21-bit, 单帧 1 地址 | 短/长地址, 帧内多地址 |

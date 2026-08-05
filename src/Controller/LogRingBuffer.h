@@ -24,9 +24,6 @@ public:
    */
   void get(char* buf, size_t size);
 
-  /** 全局单例 (由 CommandDispatcher 持有) */
-  static LogRingBuffer& instance();
-
 private:
   char        m_buf[MAX_LINES][LINE_LEN];
   int         m_head  = 0;   //!< 下一条写入位置

@@ -447,8 +447,10 @@ void WebServer::onWifiScan(AsyncWebServerRequest* req) {
   api_dispatch(&r, &resp);
 
   if (resp.code == RespCode::OK) {
-    // 直接返回 String 缓存, 避免 CmdResponse union 512 字节截断
-    req->send(200, "application/json", api_getScanCache());
+    // 拷贝到栈缓冲再发送 (api_getScanCache 不返回内部指针, 线程安全)
+    char scanBuf[4096];
+    api_getScanCache(scanBuf, sizeof(scanBuf));
+    req->send(200, "application/json", scanBuf);
   } else {
     req->send(500, "application/json", "[]");
   }
@@ -486,7 +488,8 @@ void WebServer::onSweepStart(AsyncWebServerRequest* req, uint8_t* data, size_t l
 
   // 从当前 TxConfig 填充并启动 (规格 §8.2 / §9.4)
   uint32_t start = 0;
-  RespCode code = api_sweepStartSimple(mode, &start);
+  int detail = 0;
+  RespCode code = api_sweepStartSimple(mode, &start, &detail);
 
   if (code == RespCode::OK) {
     const char* modeName = (mode == 0) ? "addr" : "freq";
@@ -498,7 +501,7 @@ void WebServer::onSweepStart(AsyncWebServerRequest* req, uint8_t* data, size_t l
   } else {
     char buf[128];
     snprintf(buf, sizeof(buf), "{\"code\":%d,\"detail\":%d}",
-             (int)code, (int)code);
+             (int)code, detail);
     req->send(400, "application/json", buf);
   }
 }

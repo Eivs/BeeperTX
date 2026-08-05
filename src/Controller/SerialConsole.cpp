@@ -390,8 +390,10 @@ void SerialConsole::cmdScan() {
 
   if (resp.code == RespCode::OK) {
     // 扫描结果 JSON 由 api_getScanCache() 提供 (CmdResponse union 已不含 4KB 缓存)
+    char scanBuf[4096];
+    api_getScanCache(scanBuf, sizeof(scanBuf));
     m_stream.print(F("OK SCAN "));
-    m_stream.println(api_getScanCache());
+    m_stream.println(scanBuf);
   }
 }
 

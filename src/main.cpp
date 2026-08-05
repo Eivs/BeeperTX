@@ -153,6 +153,10 @@ void setup() {
   // 发射任务 (txTask, core 1 高优先级) 会在发射期间抢占本任务 (loopTask)。
   // loopTask 的 Task WDT 订阅在此移除, 喂狗职责由 txTask 接管
   // (见 Transmitter::txTaskMain); 否则长 POCSAG 帧 (>5s) 会误触 WDT 复位。
+  //
+  // 注意 (权衡): 空闲期无任何任务订阅 Task WDT, loopMainTask 若死锁
+  // 不会被 Task WDT 复位 (仅剩硬件 WDT 兜底)。选择让位给发射期喂狗,
+  // 因发射期任务栈冻结才是实际风险源。
   esp_task_wdt_delete(NULL);
 
   Serial.println(F("\n"

@@ -111,6 +111,12 @@ private:
   uint32_t m_origFreqKHz;   // 追频起始频率 (结束/停止时恢复)
   uint32_t m_nextTxMs;      // 下次发射时间戳 (millis)
 
+  // 非阻塞恢复频率: stop() 只置标志 + abort, 实际恢复在 loop() 中
+  // 等 txTask 完全退出 Direct TX 后执行 (避免在 AsyncTCP 回调里忙等)。
+  // 快照在 stop() 时刻取值, 防止 stop 后立即 start() 覆盖 m_cfg/m_origFreqKHz。
+  bool     m_restorePending = false;
+  uint32_t m_restoreFreqKHz = 0;
+
   // POCSAG 批进度 (异步发射: 整批入队, 队列满时下帧重试)
   uint32_t m_batchBase = 0;  //!< 当前整批起始地址
   uint32_t m_batchSize = 0;  //!< 当前整批地址总数 (≤ POCSAG_BATCH_SIZE)
@@ -144,7 +150,4 @@ private:
 
   /** 检查是否达到频率上限 */
   bool isFreqMax() const;
-
-  /** 追频结束/停止时恢复起始频率 */
-  void restoreFreqIfNeeded();
 };

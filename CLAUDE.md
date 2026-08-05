@@ -71,7 +71,7 @@ Sweeper::loop() 由 main.cpp loop() 每帧调用 (非阻塞, 批次间 intervalM
 - **Direct TX Mode** (非 FIFO): MCU 通过 GPIO0 逐位驱动调制数据
 - `Si446x_startDirectTX(0, 1)` 启动异步直接模式
 - `Transmitter::sendCodewords()` / `sendBytes()` 处理实际位流
-- `Transmitter::bitTimeUs(baudRate)` 码率→位时间查表 (512→1953, 1200→833, 1600→625, 2400→417, 3200→312, 6400→156 µs)
+- `Transmitter::bitTimeUs(baudRate)` 码率→位时间查表 (512→1953, 1200→833, 1600→625, 2400→417, 3200→312 µs)
 - 忙等待时序 (`while (esp_timer_get_time() < next)` 循环, 每 500 位喂一次 WDT)
 
 ### POCSAG 编码 (lib/Pocsag/)
@@ -104,7 +104,7 @@ Sweeper::loop() 由 main.cpp loop() 每帧调用 (非阻塞, 批次间 intervalM
 - `Transmitter` 类封装 Direct TX 公共流程, 统一调度 POCSAG / FLEX
 - `Transmitter::Config` 结构体包含全部发射参数: encoding, phase, baudRate, tone, address, message, msgType
 - `Transmitter::send(Config)` — 统一入口, 自动选择编码器, 预编码后通过 `sendPocsagRaw`/`sendFlexRaw` 异步入队
-- `Transmitter::bitTimeUs(baudRate)` — 码率→位时间查表 (512/1200/1600/2400/3200/6400)
+- `Transmitter::bitTimeUs(baudRate)` — 码率→位时间查表 (512/1200/1600/2400/3200)
 - POCSAG 编码在 `send()` 中调用 `PocsagEncoder::encode()` 预编码；中文控制字符 (`\x0E`/`\x0F`) 由 `deCodeAlpha()` 注入
 - FLEX 编码在 `send()` 中调用 `FlexEncoder::encode()` 预编码；中文控制字符由上层的 GB2312 混排逻辑注入
 - `main.cpp` 只负责硬件初始化和组件编排, 无发射逻辑；发射配置在 `API.cpp` 的 `api_init()` 中设置

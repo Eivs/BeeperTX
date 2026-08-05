@@ -63,9 +63,19 @@ int Sweeper::start(const Config& cfg) {
 
 void Sweeper::stop() {
   if (m_mode == IDLE) return;
-  restoreFreqIfNeeded();
+  // 非阻塞停止: 先中止发射 (abort 标志 + 排空队列), 立即置 IDLE 返回。
+  // 恢复起始频率延迟到 loop() 中执行 — 若在此处忙等 txTask 退出:
+  // 本函数可能在 AsyncTCP 回调 (webUI 停止) 里阻塞整个服务任务;
+  // 且若先 restoreFreqIfNeeded: 位敲击仍在进行, Si4463 处于 Direct TX
+  // 不响应 setFrequency (CTS 忙等最多 400ms), 并造成帧中途跳频。
+  // loop() 中执行时 txTask 已退出 (isBusy()==false 即含 20ms 恢复延时),
+  // 恢复不会与发射冲突。
+  m_restorePending = (m_cfg.mode == FREQ_SWEEP &&
+                      m_origFreqKHz != 0 &&
+                      m_current != m_origFreqKHz);
+  m_restoreFreqKHz = m_origFreqKHz;  // 快照, 防 stop 后立即 start() 覆盖
   m_mode = IDLE;
-  if (m_tx) m_tx->abortTx();  // 中断当前发射 (半字节精度的秒级停发)
+  if (m_tx) m_tx->abortTx();
 }
 
 // ============================================================
@@ -112,22 +122,25 @@ bool Sweeper::isFreqMax() const {
   return m_current > m_cfg.freqMaxKHz;
 }
 
-void Sweeper::restoreFreqIfNeeded() {
-  // 追频结束/停止时, 把射频频率恢复为起始值 (避免下次手动发射落错频率)
-  if (m_mode == FREQ_SWEEP && m_origFreqKHz != 0 &&
-      m_current != m_origFreqKHz) {
-    Si446x_setFrequencyKHz(m_origFreqKHz);
-    char logLine[64];
-    snprintf(logLine, sizeof(logLine), "SWEEP freq restored to %lukHz",
-             (unsigned long)m_origFreqKHz);
-    api_log(logLine);
-  }
-}
-
 // ============================================================
 // 主循环 (由 main.cpp loop 驱动)
 // ============================================================
 void Sweeper::loop() {
+  // 非阻塞恢复频率 (stop 后置位): 等 txTask 完全退出 Direct TX 再
+  // setFrequency, 不忙等不阻塞调用方。isBusy()==false 意味着 txTask 已
+  // 完成 exitTx (含 SI446X_TX_RECOVER_MS 恢复延时), 恢复无发射冲突。
+  if (m_restorePending) {
+    if (m_tx && m_tx->isBusy()) return;  // 仍在收尾, 下轮再试
+    m_restorePending = false;
+    if (m_restoreFreqKHz != 0) {
+      Si446x_setFrequencyKHz(m_restoreFreqKHz);
+      char logLine[64];
+      snprintf(logLine, sizeof(logLine), "SWEEP freq restored to %lukHz",
+               (unsigned long)m_restoreFreqKHz);
+      api_log(logLine);
+    }
+    return;
+  }
   if (m_mode == IDLE) return;
   if (!m_tx) { m_mode = IDLE; return; }
 
@@ -223,9 +236,6 @@ void Sweeper::txAddrBatch() {
                (unsigned long)m_batchAddrs[sub - 1],
                addrEncoded, sub);
       api_log(logLine);
-
-      Serial.print('.');
-      Serial.println(F(" OK"));
     } else {
       // 理论不可达 (55 地址恒可编码): 防御推进, 避免卡死
       api_log("SWEEP addr batch encode failed");
@@ -317,13 +327,11 @@ void Sweeper::txAddrBatch() {
                (unsigned long)addr, (unsigned long)(addr + encoded - 1));
       api_log(logLine);
 
-      Serial.print('.');
       bool invert = (m_cfg.phase == PhaseType::NORMAL);
       if (!m_tx->sendFlexRaw(m_flexEncoder.getData(), len, m_cfg.baudRate,
                              invert)) {
         return;  // 队列满: 下帧重试 (m_current 未推进)
       }
-      Serial.println(F(" OK"));
       m_done += (uint32_t)encoded;
       m_current = addr + (uint32_t)encoded;
     } else {

@@ -10,12 +10,18 @@
 
   const PRESETS_KEY = 'beeper_tx_presets';
 
+  // 码率按编码区分 (与后端 isBaudRateValid 一致):
+  // POCSAG 512/1200 (默认 1200), FLEX 1600/2400/3200 (默认 1600)
+  const BAUD_OPTIONS = { pocsag: [512, 1200], flex: [1600, 2400, 3200] };
+  const BAUD_DEFAULT = { pocsag: 1200, flex: 1600 };
+
   let currentConfig = {};
 
   // ---- 按钮组初始化 ----
   function initBtnGroups() {
     document.querySelectorAll('.btn-group[data-field]').forEach(group => {
       const field = group.dataset.field;
+      if (field === 'encoding') return;  // encoding 由 applyEncodingDefaults 原子提交 (含默认值)
       group.querySelectorAll('button[data-value]').forEach(btn => {
         btn.addEventListener('click', () => {
           // 更新 UI
@@ -46,39 +52,72 @@
       });
     });
 
-    // 编码切换 → 自动设置对应默认值
+    // 编码切换 → 立即视觉反馈 + 稍后原子提交 (encoding+默认值, 一次请求)
     const encGroup = document.querySelector('.btn-group[data-field="encoding"]');
     if (encGroup) {
       encGroup.addEventListener('click', async (e) => {
         const btn = e.target.closest('button[data-value]');
         if (!btn) return;
         const enc = btn.dataset.value;
-        // 稍后等后端确认后再更新默认值
+        // 立即更新选中态 (视觉反馈)
+        encGroup.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        // 稍后等后端确认后再更新默认值 (含 encoding 一起原子提交)
         setTimeout(() => applyEncodingDefaults(enc), 100);
       });
     }
   }
 
-  /** 根据编码切换设置 Polar/Tone/Baud 默认值 */
+  /** 按编码重建 Baud Rate 按钮组 (POCSAG: 512/1200, FLEX: 1600/2400/3200) */
+  function rebuildBaudGroup(enc) {
+    const group = document.querySelector('.btn-group[data-field="baudRate"]');
+    if (!group) return;
+    const opts = BAUD_OPTIONS[enc] || BAUD_OPTIONS.pocsag;
+    // 当前选中值若仍在选项内则保留, 否则交给调用方设默认
+    const activeBtn = group.querySelector('button.active');
+    const curVal = activeBtn ? activeBtn.dataset.value : null;
+    const keep = opts.some(v => String(v) === curVal) ? curVal : null;
+
+    group.innerHTML = '';
+    opts.forEach(v => {
+      const b = document.createElement('button');
+      b.className = 'btn btn-sm';
+      b.dataset.value = String(v);
+      b.textContent = String(v);
+      if (String(v) === keep) b.classList.add('active');
+      b.addEventListener('click', () => {
+        group.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+        b.classList.add('active');
+        updateField('baudRate', b.dataset.value);
+      });
+      group.appendChild(b);
+    });
+  }
+
+  /** 根据编码切换设置 Polar/Tone/Baud 默认值 (与 encoding 原子提交) */
   async function applyEncodingDefaults(enc) {
-    const patch = {};
+    const patch = { encoding: enc };
     if (enc === 'pocsag') {
       patch.phase    = 'normal';
       patch.tone     = 'A';
-      patch.baudRate = 1200;
+      patch.baudRate = BAUD_DEFAULT.pocsag;
     } else if (enc === 'flex') {
       patch.phase    = 'inverted';
       patch.tone     = 'D';
-      patch.baudRate = 1600;
+      patch.baudRate = BAUD_DEFAULT.flex;
     } else return;
     try {
       const resp = await window.API.setConfig(patch);
       if (!resp.code) {
         // 本地即时更新 UI (不需要等待 refreshPanel)
+        setBtnGroup('encoding', enc);                  // 确认后端已接受
+        rebuildBaudGroup(enc);                         // 切换码率选项
         setBtnGroup('phase',    patch.phase);
         setBtnGroup('tone',     patch.tone);
-        setBtnGroup('baudRate', String(patch.baudRate));
+        setBtnGroup('baudRate', String(patch.baudRate));  // 选中默认码率
         window.Terminal.log(`encoding=${enc}: applied defaults`, 'rx');
+      } else {
+        window.Terminal.log(`encoding=${enc} rejected: ${resp.detail || ''}`, 'error');
       }
     } catch(e) {
       window.Terminal.log(`encoding defaults failed: ${e.message}`, 'error');
@@ -108,6 +147,7 @@
       const cfg = await window.API.getConfig();
       if (!cfg || cfg.code) return;
       currentConfig = cfg;
+      rebuildBaudGroup(cfg.encoding);  // 选项随当前编码
       applyConfig(cfg);
     } catch(e) { /* ignore */ }
   }
@@ -151,7 +191,8 @@
     localStorage.setItem(PRESETS_KEY, JSON.stringify(presets));
   }
 
-  function populatePresetSelect() {
+  /** 重建下拉; keepSel 存在时保持该项选中 */
+  function populatePresetSelect(keepSel) {
     const sel = document.getElementById('sel-preset');
     const presets = loadPresets();
     sel.innerHTML = '<option value="">-- saved presets --</option>';
@@ -161,19 +202,64 @@
       opt.textContent = name;
       sel.appendChild(opt);
     });
+    if (keepSel && presets[keepSel]) sel.value = keepSel;
   }
 
+  /** 从当前表单收集配置 (存 preset 用, 不依赖后端往返) */
+  function collectFormConfig() {
+    const cfg = {};
+    ['encoding','phase','tone','msgType','baudRate'].forEach(f => {
+      const group = document.querySelector(`.btn-group[data-field="${f}"]`);
+      const active = group && group.querySelector('button.active');
+      if (active) {
+        cfg[f] = (f === 'baudRate') ? Number(active.dataset.value) : active.dataset.value;
+      }
+    });
+    const inputMap = { 'inp-freq': 'freqKHz', 'inp-power': 'txPower', 'inp-addr': 'address' };
+    Object.entries(inputMap).forEach(([id, field]) => {
+      const el = document.getElementById(id);
+      if (el && el.value !== '') cfg[field] = Number(el.value);
+    });
+    const msg = document.getElementById('inp-message');
+    if (msg && msg.value) cfg.message = msg.value;
+    return cfg;
+  }
+
+  /**
+   * Save: 已加载 preset (下拉有选中) → 覆盖 (确认);
+   * 未加载 (下拉空) → 用当前表单新建 (prompt 名称)。
+   */
   async function handleSavePreset() {
-    const name = prompt('Preset name:');
-    if (!name) return;
-    const cfg = await window.API.getConfig();
+    const sel = document.getElementById('sel-preset');
+    const name = sel.value;
+
+    // 未加载任何 preset → 新建
+    if (!name) {
+      const newName = prompt('New preset name:');
+      if (!newName) return;
+      const presets = loadPresets();
+      if (presets[newName] && !confirm('preset "' + newName + '" already exists, overwrite?')) return;
+      presets[newName] = collectFormConfig();
+      savePresets(presets);
+      populatePresetSelect(newName);
+      window.Terminal.log(`preset "${newName}" created`, 'rx');
+      return;
+    }
+
+    // 已加载 preset → 覆盖 (确认)
     const presets = loadPresets();
-    presets[name] = cfg;
+    if (!presets[name]) {
+      window.Terminal.log(`preset "${name}" does not exist, select empty to create`, 'warn');
+      return;
+    }
+    if (!confirm('Overwrite preset "' + name + '"?')) return;
+    presets[name] = collectFormConfig();
     savePresets(presets);
-    populatePresetSelect();
+    populatePresetSelect(name);
     window.Terminal.log(`preset "${name}" saved`, 'rx');
   }
 
+  /** 选中预设即加载 (sel-preset change) */
   async function handleLoadPreset() {
     const sel = document.getElementById('sel-preset');
     const name = sel.value;
@@ -183,6 +269,7 @@
     if (!cfg) return;
     await window.API.setConfig(cfg);
     await refreshPanel();
+    populatePresetSelect(name);
     window.Terminal.log(`preset "${name}" loaded`, 'rx');
   }
 
@@ -200,6 +287,8 @@
   // ---- Sweep 扫描控制 ----
   let sweepRunning = false;
   let sweepMode = 'addr';  // 当前选中的模式
+  let sweepPolling = false;   // 是否轮询 /api/sweep/status (仅 sweep 进行中)
+  let sweepWasRunning = false;  // 上一轮轮询的 running 状态 (检测停止沿)
 
   function getSweepMode() {
     const addrBtn = document.getElementById('btn-sweep-addr');
@@ -244,6 +333,8 @@
     try {
       const resp = await window.API.sweepStart(mode);
       if (!resp.code) {
+        sweepPolling = true;  // 开始轮询 sweep/status
+        if (window.__setSweepActive) window.__setSweepActive(true);  // 暂停 status 轮询
         setSweepRunningUI(true);
         window.Terminal.log('SWEEP ' + mode + ' started: ' + resp.start, 'info');
       } else {
@@ -257,6 +348,8 @@
   async function handleSweepStop() {
     try {
       await window.API.sweepStop();
+      sweepPolling = false;  // 停止轮询 sweep/status
+      if (window.__setSweepActive) window.__setSweepActive(false);  // 恢复 status 轮询 (立即刷新)
       window.Terminal.log('SWEEP stopped', 'warn');
     } catch(e) {
       window.Terminal.log('SWEEP stop error: ' + e.message, 'error');
@@ -277,11 +370,13 @@
     // Send 按钮
     const sendBtn = document.getElementById('btn-send');
     if (sendBtn) sendBtn.disabled = !enabled;
-    // 预设按钮
-    ['btn-preset-save','btn-preset-load','btn-preset-del'].forEach(id => {
+    // 预设按钮 + 下拉 (扫中禁用, 避免加载配置与发射冲突)
+    ['btn-preset-save','btn-preset-del'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.disabled = !enabled;
     });
+    const selPreset = document.getElementById('sel-preset');
+    if (selPreset) selPreset.disabled = !enabled;
   }
 
   function setSweepRunningUI(running) {
@@ -316,13 +411,28 @@
     }
   }
 
-  /** 由 main.js 定时轮询调用, 刷新扫描状态 UI */
+  /** 由 main.js 定时轮询调用, 刷新扫描状态 UI (仅 sweepPolling 时调用) */
   async function updateSweepUI() {
     try {
       const s = await window.API.sweepStatus();
       if (!s || s.code) return;
 
       const running = s.running === true || s.running === 'true';
+      // 轮询开关 + status 轮询暂停/恢复, 由 running 沿驱动:
+      // 运行 → 保持轮询 + 暂停 status; 停止 → 关闭轮询 + 恢复 status。
+      if (running) {
+        sweepPolling = true;
+        if (!sweepWasRunning && window.__setSweepActive) {
+          window.__setSweepActive(true);
+        }
+      } else {
+        sweepPolling = false;
+        if (sweepWasRunning && window.__setSweepActive) {
+          window.__setSweepActive(false);  // 恢复 status 轮询 (立即刷新)
+        }
+      }
+      sweepWasRunning = running;
+
       setSweepRunningUI(running);
 
       if (!running) return;  // 非运行态: setSweepRunningUI 已隐藏状态行
@@ -364,8 +474,9 @@
     populatePresetSelect();
 
     document.getElementById('btn-preset-save')?.addEventListener('click', handleSavePreset);
-    document.getElementById('btn-preset-load')?.addEventListener('click', handleLoadPreset);
     document.getElementById('btn-preset-del')?.addEventListener('click', handleDelPreset);
+    // 选中预设即加载 (不再需要 Load 按钮)
+    document.getElementById('sel-preset')?.addEventListener('change', handleLoadPreset);
 
     // Sweep 控制
     initSweepControls();
@@ -373,7 +484,12 @@
     // 初始加载
     refreshPanel();
 
-    window.ConfigPanel = { refresh: refreshPanel, updateSweepUI: updateSweepUI };
+    window.ConfigPanel = {
+      refresh: refreshPanel,
+      updateSweepUI: updateSweepUI,
+      isSweepPolling: () => sweepPolling,
+      setSweepPolling: (v) => { sweepPolling = !!v; }
+    };
   }
 
   if (document.readyState === 'loading') {

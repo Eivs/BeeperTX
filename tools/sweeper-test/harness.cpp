@@ -150,9 +150,10 @@ int main() {
     check("第1点 current=152700", sw.getStatus().current == 152700);
 
     g_millis += 600;
-    sw.loop();  // 发 152700 → 完成 + 恢复
+    sw.loop();  // 发 152700 → 完成 + stop (恢复为异步: 下一轮 loop 执行)
     check("第2点 done=2", sw.getStatus().done == 2);
     check("完成后 running=false", !sw.getStatus().running);
+    sw.loop();  // 异步恢复: 等 txTask 退出后 setFrequency 152675
     check("恢复起始频率被调用", g_freqSetCount >= 1 &&
           g_freqSet[g_freqSetCount - 1] == 152675);
   }
@@ -169,9 +170,10 @@ int main() {
     sw.loop();            // 发 152675 → current=152700, 设置频率 152675
     check("STOP 前 1 次发射", g_sendCalls == 1);
     check("loop 已设置起始频率", g_freqSetCount == 1 && g_freqSet[0] == 152675);
-    sw.stop();            // 手动停止 → 恢复起始频率 (第 2 次设置)
-    check("STOP 后恢复频率被调用", g_freqSetCount == 2 && g_freqSet[1] == 152675);
+    sw.stop();            // 手动停止: 只 abort + 置 IDLE, 立即返回
     check("STOP 后 running=false", !sw.isRunning());
+    sw.loop();            // 异步恢复起始频率 (第 2 次设置)
+    check("STOP 后恢复频率被调用", g_freqSetCount == 2 && g_freqSet[1] == 152675);
     g_sendCalls = 0;
   }
 
@@ -251,19 +253,19 @@ int main() {
     sw.start(c);
 
     g_txQueueFull = true;
-    sw.loop();  // FLEX 首地址 enqueue 失败
+    sw.loop();  // FLEX 首批发 enqueue 失败
     check("FLEX 队列满: done=0 且 current 未推进", sw.getStatus().done == 0 &&
           sw.getStatus().current == 5000);
 
+    // 5000/5001 均为短地址 → 同批 (n=2) 一次入队; 队列恢复后整批完成
     g_txQueueFull = false;
     g_millis += 600;
-    sw.loop();  // 发 5000
-    check("FLEX 第1地址 done=1", sw.getStatus().done == 1);
-    check("FLEX 第1地址 current=5001", sw.getStatus().current == 5001);
+    sw.loop();  // 批量 (2 地址) 入队成功
+    check("FLEX 批量 done=2", sw.getStatus().done == 2);
+    check("FLEX 批量 current=5002", sw.getStatus().current == 5002);
 
     g_millis += 600;
-    sw.loop();  // 发 5001 → 完成
-    check("FLEX 完成后 done=2", sw.getStatus().done == 2);
+    sw.loop();  // 全部地址已发 → 完成
     check("FLEX 完成后 running=false", !sw.getStatus().running);
     g_txQueueFull = false;
     g_millis = 0;

@@ -127,12 +127,15 @@ static inline bool busyWaitUntil(uint64_t next, volatile bool& abort) {
 }
 
 void Transmitter::sendCodewords(const unsigned long* cw, int count, int bitTimeUs) {
+  // 注意: 不能以 word==0 作为流终止哨兵 — POCSAG 地址 1-7 (function 0)
+  // 的地址码字是合法全零 (0x00000000), 截断会丢地址且连带截掉后续整批
+  // (追码批量). 长度以 count (编码器 bandPtr) 为准, 编码器保证范围内
+  // 每个槽都有合法码字 (SYNC/地址/消息/IDLE)。
   uint64_t next = esp_timer_get_time();
   int wdtCnt = 0;
   for (int i = 0; i < count; i++) {
     if (m_abort) return;
     unsigned long word = cw[i];
-    if (word == 0) break;
     for (int bit = 31; bit >= 0; bit--) {
       digitalWrite(m_txPin, ((word >> bit) & 1) ? HIGH : LOW);
       next += bitTimeUs;
@@ -193,7 +196,7 @@ bool Transmitter::send(const Config& cfg) {
 
     if (encoder.hasError()) {
       Serial.printf("FLEX encode error: %s\n", encoder.getErrorString());
-      m_txCount++;
+      // 不计数: 实际未发射 (与 POCSAG 路径一致 — 成功才在 impl 里 +1)
       return false;
     }
     bool invert = (cfg.phase == PhaseType::NORMAL);
@@ -261,8 +264,12 @@ void Transmitter::sendPocsagRawImpl(const unsigned long* baseband, int wordCount
   enterTx();
   sendCodewords(baseband, wordCount, bt);
   exitTx();
-  Serial.println(" OK");
-  m_txCount++;
+  if (m_abort) {
+    Serial.println(" ABORTED");
+  } else {
+    Serial.println(" OK");
+    m_txCount++;
+  }
 }
 
 void Transmitter::sendFlexRawImpl(const uint8_t* data, size_t len,
