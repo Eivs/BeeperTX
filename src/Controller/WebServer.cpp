@@ -296,6 +296,7 @@ void WebServer::onConfigSet(AsyncWebServerRequest* req, uint8_t* data, size_t le
   getR.payloadType = PayloadType::NONE;
   api_dispatch(&getR, &getResp);
   TxConfig cfg = getResp.config;
+  TxConfig before = cfg;  // 快照, 用于 diff 实际变更字段
 
   // 用 JSON body 覆盖
   String body;
@@ -311,9 +312,30 @@ void WebServer::onConfigSet(AsyncWebServerRequest* req, uint8_t* data, size_t le
   api_dispatch(&setR, &setResp);
 
   if (setResp.code == RespCode::OK) {
-    char logLine[128];
-    snprintf(logLine, sizeof(logLine), "WEB config: freq=%ukHz baud=%d pwr=%d",
-             (unsigned)cfg.freqKHz, cfg.baudRate, cfg.txPower);
+    // 只打印实际变更的字段 (快速连点时日志可读, 不再刷固定 freq/baud/pwr)
+    char logLine[256];
+    size_t pos = 0;
+    pos += snprintf(logLine + pos, sizeof(logLine) - pos, "WEB config:");
+    if (cfg.encoding != before.encoding)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " encoding=%d", (int)cfg.encoding);
+    if (cfg.phase != before.phase)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " phase=%d", (int)cfg.phase);
+    if (cfg.tone != before.tone)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " tone=%d", (int)cfg.tone);
+    if (cfg.msgType != before.msgType)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " msgType=%d", (int)cfg.msgType);
+    if (cfg.freqKHz != before.freqKHz)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " freq=%ukHz", (unsigned)cfg.freqKHz);
+    if (cfg.baudRate != before.baudRate)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " baud=%d", cfg.baudRate);
+    if (cfg.address != before.address)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " addr=%lu", (unsigned long)cfg.address);
+    if (cfg.txPower != before.txPower)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " pwr=%d", cfg.txPower);
+    if (cfg.mailDrop != before.mailDrop)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " mailDrop=%d", cfg.mailDrop ? 1 : 0);
+    if (strcmp(cfg.message, before.message) != 0)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " msg=\"%s\"", cfg.message);
     api_log(logLine);
     req->send(200, "application/json", configToJson(cfg));
   } else {
