@@ -200,8 +200,14 @@ Word[2..]: [ch[i+2] | ch[i+1] | ch[i]] × N
 
 - 最大 **MAX_CHARS_ALPHA** = (88 − 4) × 3 − 4 = **248 字符** [[lib/Flex/flex.h:49-55]]
 - 未满的 7-bit 位置用 ETX (`0x03`) 填充
+- **Mail Drop 标志** (word[0] bit20, f1f0=11 之后的最高位) [[lib/Flex/flex.h:506-513]]：
+  - 置位时消息**静默投递**: 不触发寻呼机振铃, 直接存入公共信箱 (Mail Drop)。
+  - 实机验证 (2026-08): Motorola 精英360 (Elite 360) FLEX 寻呼机可收到,
+    消息存放在公共信箱, **无振铃提示**。适合批量/低频测试消息 (不打扰持机者)。
+  - 通过 WebUI "Mail Drop (FLEX)" 勾选 / `FlexEncoder::encode(mailDrop=true)`
+    控制, 仅 ALPHA 路径生效 (Numeric/Tone-only 由规范忽略)。
 - **S-bit**（7-bit 签名, word[1] bits 6..0）：对 word[1..N-1] 中每个 7-bit 字符字段求和 → 按位取反 → 取低 7 位。用于接收端快速校验消息完整性。
-- **K-bit**（10-bit 校验和, word[0] bits 9..0）：对所有 word[0..N-1] 分别拆分低 8 位 (`bits 7..0`)、中 8 位 (`bits 15..8`)、高 5 位 (`bits 20..16`) 三组求和 → 按位取反 → 取低 10 位。比 S-bit 更强校验，覆盖包括 word[0] 在内的完整消息。
+- **K-bit**（10-bit 校验和, word[0] bits 9..0）：对所有 word[0..N-1] 分别拆分低 8 位 (`bits 7..0`)、中 8 位 (`bits 15..8`)、高 5 位 (`bits 20..16`) 三组求和 → 按位取反 → 取低 10 位。比 S-bit 更强校验，覆盖包括 word[0] 在内的完整消息。**注意**: 高 5 位含 Mail Drop 位 (bit20), 故置位后 word[0] 的 K-bit 会变 (校验和随整个消息字重算)。
 
 **Numeric** (4-bit 编码) [[lib/Flex/flex.h:854-924]]：
 
