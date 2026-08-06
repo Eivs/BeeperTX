@@ -152,7 +152,7 @@ void Sweeper::loop() {
   if (m_mode == IDLE) return;
   if (!m_tx) { m_mode = IDLE; return; }
 
-  // 范围完成自动停止 (规格 §7.2)
+  // 范围完成自动停止
   if (m_done >= m_total) {
     stop();
     logProgress("SWEEP complete");
@@ -164,7 +164,7 @@ void Sweeper::loop() {
   // 且追码追频队列最多积压有限批次, STOP 后残余最多 1-2 批。
   if (m_tx->isBusy()) return;
 
-  // 按节拍调度: 批次间 intervalMs 间隔 (规格 §7.3)
+  // 按节拍调度: 批次间 intervalMs 间隔
   if (millis() >= m_nextTxMs) {
     sweepStep();
   }
@@ -377,7 +377,7 @@ void Sweeper::txFreqOnce() {
     return;
   }
 
-  // 设置新频率 (此时 txTask 空闲 — loop() 的 isBusy 门控保证, 规格 §13.3)
+  // 设置新频率 (此时 txTask 空闲 — loop() 的 isBusy 门控保证)
   Si446x_setFrequencyKHz(m_current);
   // 短暂等待 PLL 锁定 (Si4463 锁定时序 ~200µs, 1ms 有足够余量)
   delay(1);

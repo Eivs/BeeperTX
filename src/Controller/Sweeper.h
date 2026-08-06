@@ -37,9 +37,9 @@ public:
   };
 
   static const uint32_t DEFAULT_FREQ_STEP_KHZ = 25;      //!< 默认频率步进 (kHz)
-  static const uint32_t DEFAULT_FREQ_MAX_KHZ  = 999999;  //!< 默认频率上限 (kHz, 规格 §9.4)
+  static const uint32_t DEFAULT_FREQ_MAX_KHZ  = 999999;  //!< 默认频率上限 (kHz)
   static const uint32_t DEFAULT_ADDR_END      = 0x1FFFFF; //!< 默认地址上限 (POCSAG 21-bit)
-  static const int      DEFAULT_INTERVAL_MS   = 500;     //!< 默认批次间隔 (ms, 规格 §7.3)
+  static const int      DEFAULT_INTERVAL_MS   = 500;     //!< 默认批次间隔 (ms)
   static const int    POCSAG_BATCH_SIZE = 55;           //!< POCSAG 每批地址数 (1 前导码连续流, ≤ MAX_BATCH 恒可编码)
   static const int    FLEX_BATCH_SIZE   = 55;           //!< FLEX 每批地址数 (一次 ERS 连续多帧; 55×6 字 ≤ 4 帧×87 字, 恒可编码)
   static const int    BATCH_GAP_MS      = 50;           //!< 批次间隔下限 (ms, 保证 WiFi/串口处理机会 + Si4463 状态恢复)
@@ -65,7 +65,7 @@ public:
     uint16_t intervalMs = DEFAULT_INTERVAL_MS;  // 批次/频率点间隔 (ms)
   };
 
-  /** 扫描状态 (运行时只读, 规格 §3.1) */
+  /** 扫描状态 (运行时只读) */
   struct Status {
     bool     running = false;
     uint8_t  mode    = IDLE;   // Mode
@@ -133,7 +133,7 @@ private:
   FlexEncoder::BatchMsg m_flexBatch[FLEX_BATCH_SIZE];   //!< FLEX 批量消息描述
   char m_flexMsgText[FLEX_BATCH_SIZE][16];              //!< 地址十进制串缓冲 (≤7 位 + NUL)
 
-  /** 计算总步数 (规格 §7.2) */
+  /** 计算总步数 */
   bool calcTotalSteps();
 
   /** 执行一步扫描发射 */

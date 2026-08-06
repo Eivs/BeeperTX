@@ -401,7 +401,7 @@ void SerialConsole::cmdSweep(const char* args) {
   // 语法: SWEEP [START] addr|freq [encoding=..] [baud=..] [phase=..] [tone=..]
   //                  [msgType=..] [interval=..]
   //        SWEEP [START] stop|status
-  // "START" 前缀可选, 兼容两种写法 (规格 §8.3 附录 A 与 help)。
+  // "START" 前缀可选, 兼容两种写法。
   if (!args) {
     m_stream.println(F("ERR SWEEP: need 'addr', 'freq', 'stop' or 'status'. See HELP."));
     return;
@@ -454,7 +454,7 @@ void SerialConsole::cmdSweep(const char* args) {
   req.sweepStart.msgType    = -1;
   req.sweepStart.intervalMs = -1;
 
-  // 解析参数覆盖 (规格 §8.3 附录 A), 非法 key 或非法值均报错
+  // 解析参数覆盖, 非法 key 或非法值均报错
   bool badParam = false;
   char badKey[24] = "";
   while ((tok = strtok(nullptr, " ")) != nullptr) {

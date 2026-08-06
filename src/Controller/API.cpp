@@ -686,7 +686,7 @@ void CommandDispatcher::dispatch(const CmdRequest* req, CmdResponse* resp) {
 }
 
 // ============================================================
-// api_sweepStartSimple — Web/串口快捷入口 (规格 §8.2)
+// api_sweepStartSimple — Web/串口快捷入口
 // ============================================================
 
 RespCode CommandDispatcher::sweepStartSimple(uint8_t mode, uint32_t* startOut,
@@ -783,7 +783,7 @@ void CommandDispatcher::loop() {
       strncpy(m_config.message, savedMsg, sizeof(m_config.message) - 1);
     }
   }
-  // 注: Sweeper 调度由 main.cpp loop() 调用, 不在此处 (规格 §8.4)
+  // 注: Sweeper 调度由 main.cpp loop() 调用, 不在此处
 }
 
 // ============================================================

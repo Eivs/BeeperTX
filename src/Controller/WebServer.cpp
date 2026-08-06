@@ -538,7 +538,7 @@ void WebServer::onSweepStart(AsyncWebServerRequest* req, uint8_t* data, size_t l
     return;
   }
 
-  // 从当前 TxConfig 填充并启动 (规格 §8.2 / §9.4)
+  // 从当前 TxConfig 填充并启动
   uint32_t start = 0;
   int detail = 0;
   RespCode code = api_sweepStartSimple(mode, &start, &detail);

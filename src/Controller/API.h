@@ -218,7 +218,7 @@ struct CmdResponse {
     // CMD_SCAN_WIFI / CMD_SET_WIFI
     WiFiStatus wifi;
 
-    // CMD_SWEEP_STATUS (规格 §3.1/§9.4)
+    // CMD_SWEEP_STATUS
     struct {
       bool     running;
       uint8_t  mode;       // 0=idle, 1=追地址, 2=追频率
@@ -278,7 +278,7 @@ void api_setSweeper(Sweeper* sweeper);
 void api_setRadioReady(bool ready);
 
 /**
- * @brief Web/串口快捷入口 (规格 §8.2): 从当前 TxConfig 填充扫描配置并启动。
+ * @brief Web/串口快捷入口: 从当前 TxConfig 填充扫描配置并启动。
  * @param mode     0=追码, 1=追频
  * @param startOut 可选: 实际起始值 (addrStart / freqStartKHz)
  * @param detailOut 可选: 失败时的 detail 码 (ERR_BUSY/ERR_PARAM/ERR_HW 细分)
