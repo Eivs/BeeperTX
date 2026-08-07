@@ -7,7 +7,7 @@
 //   main.cpp            — 组装层: 硬件初始化和组件编排
 //   src/Controller/     — 控制层: API 调度 + Transmitter + Web + 串口
 //   src/WiFiManager/    — WiFi AP/STA 管理
-//   lib/Pocsag/         — POCSAG 编码 (含 GB2312 中文)
+//   lib/Pocsag/         — POCSAG 编码
 //   lib/Flex/           — FLEX 编码
 //   lib/si4463/         — Si4463 SPI 射频驱动
 //   lib/Charset/        — UTF-8 → GB2312 转码
@@ -61,8 +61,7 @@ static uint32_t s_radioRetryMs = 0;  //!< 上次重试时间戳
 static const uint32_t RADIO_RETRY_MS = 10000;  //!< 重试间隔
 
 static bool initSi4463() {
-  Si446x_setPins(PIN_CS, PIN_SDN, PIN_NIRQ, PIN_TX_DATA,
-                 PIN_SCLK, PIN_MOSI, PIN_MISO);
+  Si446x_setPins(PIN_CS, PIN_SDN, PIN_NIRQ, PIN_TX_DATA, PIN_SCLK, PIN_MOSI, PIN_MISO);
   pinMode(PIN_TX_DATA, OUTPUT);
   digitalWrite(PIN_TX_DATA, LOW);
 
@@ -218,10 +217,8 @@ void setup() {
   Serial.println();
 
   // ---- 6. 业务主循环 (core 0) ----
-  // txTask (core 1) 发射时位敲击独占 core 1, 业务 loop 若留在 Arduino
-  // loopTask (core 1) 会被饿死 (Web/串口/STOP 无响应)。迁到 core 0:
-  // WiFi/AsyncTCP 也跑 core 0 且优先级更高 (prio 3), 但 txTask 不再
-  // 抢占本任务; 发射期间 Web/串口/STOP 全部可用。
+  // txTask 独占 core 1 发射时，若 loop 仍在 core 1 会被饿死。
+  // 迁至 core 0：发射期间 Web/串口/STOP 仍可用。
   xTaskCreatePinnedToCore(loopMainTask, "loopMain", 10240, nullptr, 1, nullptr, 0);
 }
 
@@ -230,15 +227,16 @@ void setup() {
 // ============================================================
 static void loopMainTask(void*) {
   for (;;) {
-    // Si446x_SERVICE 轮询在 core 1 (Arduino loop) — 与 txTask/AsyncTCP
-    // 同核, 避免跨核 SPI 并发 (见 Si446x.cpp 跨核互斥说明)
+    // Si446x_SERVICE 轮询在 core 1 (Arduino loop), 与 txTask 同核;
+    // AsyncTCP 固定 core 0 (CONFIG_ASYNC_TCP_RUNNING_CORE=0), 其回调
+    // 访问 SPI 时由 Si446x.cpp 的跨核递归锁互斥
     if (!g_radioReady) {
       radioRetryTick();  // 射频离线: 后台重试, 不阻塞其余功能
     }
     s_wifi.loop();
     s_serial.loop();
     api_loop();
-    s_sweeper.loop();  // Sweeper 非阻塞调度 (规格 §8.4)
+    s_sweeper.loop();  // Sweeper 非阻塞调度
     vTaskDelay(1);
   }
 }
@@ -247,10 +245,8 @@ static void loopMainTask(void*) {
 // loop (Arduino loopTask, core 1) — Si446x 事件轮询
 // ============================================================
 void loop() {
-  // 业务主体已迁移到 core 0 (loopMainTask)。本函数在 core 1 提供
-  // Si446x 事件轮询: ISR (attachInterrupt) 只置标志, 实际 SPI 处理
-  // 在此持跨核互斥锁执行, 与 txTask/AsyncTCP 同核串行 — 避免跨核
-  // SPI 并发触发 interrupt WDT (见 Si446x.cpp 注释)。
+  // 业务已迁至 core 0。此处仅轮询 Si446x：ISR 置标志，SPI 处理
+  // 在本核持锁执行，与 txTask 串行，避免跨核 SPI 触发 WDT。
   if (g_radioReady) {
     Si446x_SERVICE();
   }

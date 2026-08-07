@@ -112,7 +112,7 @@ void SerialConsole::printHelp() {
     "  SET key=value ...     Set TX parameters\n"
     "     freq=<kHz>         Frequency (119000-1050000)\n"
     "     pwr=<0-127>        TX power\n"
-    "     baud=<rate>        Baud rate (512/1200/1600/2400/3200/6400)\n"
+    "     baud=<rate>        Baud rate (512/1200/1600/2400/3200)\n"
     "     addr=<n>           Pager address/capcode\n"
     "     encoding=pocsag|flex\n"
     "     phase=norm|inv     Phase (normal/inverted)\n"
@@ -125,7 +125,7 @@ void SerialConsole::printHelp() {
     "  SWEEP [START] stop|status  Stop sweep / show progress\n"
     "  STOP                   Alias for SWEEP stop\n"
     "  WIFI                  Show WiFi status\n"
-    "  WIFI ssid=X pass=Y    Set WiFi credentials (triggers reboot)\n"
+    "  WIFI ssid=X pass=Y    Set WiFi credentials (connects immediately)\n"
     "  SCAN                  Scan nearby WiFi networks\n"
     "  SAVE                  Persist current TX config to NVS (survives reboot)\n"
     "  RESET                 Reboot device\n"
@@ -358,7 +358,7 @@ void SerialConsole::cmdWifi(const char* args) {
 
     if (resp.code == RespCode::OK) {
       m_stream.println(F("OK WIFI saved, connecting..."));
-      m_stream.println(F("Device will reboot in STA mode if connection succeeds."));
+      m_stream.println(F("Device will enter STA mode if connection succeeds."));
     } else {
       m_stream.print(F("ERR WIFI code="));
       m_stream.println((int)resp.code);

@@ -86,8 +86,8 @@ struct TxConfig {
   ToneType     tone      = ToneType::TONE_A;
   MsgType      msgType   = MsgType::ALPHANUMERIC;
   uint32_t     freqKHz   = 153950;       // 频率 (kHz), 范围 119000–1050000
-  uint16_t     baudRate  = 1200;         // 码率: 512/1200/1600/2400/3200/6400
-  uint32_t     address   = 1000;         // POCSAG: 0–2097151, FLEX: CAPCODE
+  uint16_t     baudRate  = 1200;         // 码率: POCSAG 512/1200, FLEX 1600/2400/3200
+  uint32_t     address   = 1000;         // POCSAG: 1–2097151, FLEX: CAPCODE
   uint8_t      txPower   = 127;          // PA 功率 0–127 (127=+20dBm)
   bool         mailDrop  = false;        // FLEX Mail Drop 标志 (仅 ALPHA 生效)
   char         message[256];             // UTF-8 消息, 最大 255 字节
@@ -99,9 +99,9 @@ struct TxConfig {
 
 struct DeviceStatus {
   uint16_t partId;        // Si4463 型号 (0x4463)
-  uint8_t  romId;         // ROM 版本 (3=B1, 6=C2)
+  uint8_t  romId;         // ROM 版本 (3=B1B, 6=C2A)
   uint8_t  chipRev;       // 芯片修订版本
-  uint8_t  state;         // Si4463 状态机 (READY=3, TX=5, etc.)
+  uint8_t  state;         // Si4463 状态机 (READY=3, TX=7, etc.)
   uint32_t freqKHz;       // 当前锁定频率 (kHz)
   uint8_t  txPower;       // 当前 PA 功率
   int16_t  rssiDbm;       // 当前 RSSI (dBm)

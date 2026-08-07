@@ -8,7 +8,7 @@
  * 协议格式: <CMD> [key=value ...]\r\n
  * 回应:     OK <cmd> [...] 或 ERR <cmd> code=<n>
  *
- * 支持命令: HELP, STATUS, CONFIG, SET, TX, WIFI, SCAN, RESET, PING
+ * 支持命令: HELP, STATUS, CONFIG, SET, TX, SWEEP, STOP, WIFI, SCAN, SAVE, RESET, PING
  *
  * 使用方式:
  * @code

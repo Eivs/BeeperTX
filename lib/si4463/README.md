@@ -1,10 +1,10 @@
 # Si4463 射频模块使用手册
 
-> **版本**: 1.0  
+> **版本**: 1.1  
 > **芯片**: Si4463 Rev B1 (兼容 C2A)  
 > **MCU**: ESP32-S3 (Arduino 框架)  
 > **库**: Zak Kemble Si446x 移植版 + Direct TX / RF 开关 / 频率控制增强  
-> **日期**: 2026-07-17
+> **日期**: 2026-08-06
 
 ---
 
@@ -55,7 +55,7 @@ Si4463 是 Silicon Labs 的 Sub-GHz 射频收发器芯片，支持：
 | SDI/MOSI    | GPIO11   | SPI 主出从入 |
 | SDO/MISO    | GPIO13   | SPI 主入从出 |
 | nIRQ        | GPIO9    | 中断输出 (低有效) |
-| GPIO0       | GPIO21   | Direct TX 数据输出 |
+| GPIO0       | GPIO16   | Direct TX 数据输出 |
 
 ### 2.2 天线开关 (RF Switch)
 
@@ -66,29 +66,37 @@ Si4463 是 Silicon Labs 的 Sub-GHz 射频收发器芯片，支持：
 | GPIO2       | 0x21 (TX_STATE) | HIGH | LOW |
 | GPIO3       | 0x20 (RX_STATE) | LOW | HIGH |
 
-### 2.3 引脚配置文件
+### 2.3 引脚配置 (应用方定义)
 
-编辑 `lib/Si446x/Si446x_config.h`：
+引脚是**板级硬件信息**, 库头文件不再内置默认引脚宏 — 由应用方定义并
+在 `Si446x_init()` 之前通过 `Si446x_setPins()` 传入。
+
+BeeperTX 中定义在 `src/main.cpp` 顶部:
 
 ```c
-#define SI446X_CSN          10   // SPI 片选
-#define SI446X_SDN           5   // 关机复位
-#define SI446X_IRQ          -1   // -1 = 禁用中断/轮询模式
-#define SI446X_TX_DATA_PIN  21   // Direct TX 数据引脚
-#define SI446X_SCLK         12   // SPI 时钟
-#define SI446X_MOSI         11   // SPI MOSI
-#define SI446X_MISO         13   // SPI MISO
+// main.cpp
+#define PIN_CS       10   // nSEL (SPI 片选)
+#define PIN_SDN       5   // SDN (关断)
+#define PIN_TX_DATA  16   // → Si4463 GPIO0 (TX 调制数据)
+#define PIN_SCLK     12   // SPI SCK
+#define PIN_MISO     13   // SPI MISO (SDO)
+#define PIN_MOSI     11   // SPI MOSI (SDI)
+#define PIN_NIRQ     -1   // 中断 (-1 = 轮询)
+
+Si446x_setPins(PIN_CS, PIN_SDN, PIN_NIRQ, PIN_TX_DATA,
+               PIN_SCLK, PIN_MOSI, PIN_MISO);
 ```
 
 > **⚠️ IRQ = -1**: ESP32 上建议设为 `-1` 使用轮询模式。AVR 库的中断处理逻辑依赖 `detachInterrupt()`/`attachInterrupt()`，在 ESP32 的 ISR 中调用这些函数会导致 Watchdog 崩溃。
 
-### 2.4 运行时重设引脚
+### 2.4 setPins 语义
 
-调用 `Si446x_init()` **之前**：
+调用 `Si446x_init()` **之前**:
 
 ```c
 Si446x_setPins(csn, sdn, irq, txData, sclk, mosi, miso);
-// 传 -1 表示保持编译时默认值
+// 传 -1 表示保持当前值; 初始均为 -1 (未设置)。
+// 除 IRQ 外的 6 个引脚必须设置, 否则 Si446x_init() 打印错误并中止。
 ```
 
 ---
@@ -104,6 +112,9 @@ Si446x_setPins(csn, sdn, irq, txData, sclk, mosi, miso);
 void setup()
 {
     Serial.begin(9600);
+
+    // 先指定引脚 (必填 6 个, IRQ 可 -1), 再初始化
+    Si446x_setPins(10, 5, -1, 16, 12, 11, 13);
 
     Si446x_init();          // 初始化芯片，加载 WDS 配置
     Si446x_setTxPower(0x7F); // 最大功率
@@ -133,7 +144,9 @@ void loop()
 ### 3.2 初始化流程
 
 ```
+Si446x_setPins(csn, sdn, irq, txData, sclk, mosi, miso)  // 先设引脚 (IRQ 可 -1)
 Si446x_init()
+ ├── 校验引脚已设置 (未设置 → 打印错误并中止)
  ├── SPI.begin(sclk, miso, mosi, -1)
  ├── SDN 拉高 → 延时 50ms → 拉低（硬件复位）
  ├── applyStartupConfig() 加载 WDS radio_config.h
@@ -159,8 +172,8 @@ Si446x_configRFswitch()
 
 | 函数 | 说明 |
 |------|------|
-| `Si446x_init()` | 初始化芯片，必须第一个调用 |
-| `Si446x_setPins(csn, sdn, irq, txData, sclk, mosi, miso)` | 运行时重设引脚（init 前调用） |
+| `Si446x_setPins(csn, sdn, irq, txData, sclk, mosi, miso)` | 指定引脚（init 前调用, 必填 6 个, IRQ 可 -1） |
+| `Si446x_init()` | 初始化芯片，须先 setPins 再调用 |
 | `Si446x_configGPIO(gpio0..sdo, genConfig)` | 自定义 GPIO 配置 |
 | `Si446x_configRFswitch()` | 快速配置 GPIO2=TX_STATE, GPIO3=RX_STATE |
 | `Si446x_getInfo(&info)` | 读取芯片版本信息 |
@@ -229,10 +242,33 @@ Si446x_configRFswitch()
 
 ## 5. WDS 配置指南
 
+### 5.0 Si4463 硬件版本 (B1B / C2A) 与 radio_config
+
+Si4463 存在两个主要硬件版本，射频参数（校准、patch 等）不同，**必须使用对应版本的 WDS 配置**：
+
+| 版本 | PART_INFO romId | WDS 配置来源 | 备注 |
+|------|----------------|--------------|------|
+| B1 (B1B) | 3 | `radio_config/Si4463b1/` | 当前工程硬件 |
+| C2 (C2A) | 6 | `radio_config/Si4463c2/` | 需加载 `si4463_c2_patch.h` |
+
+- `radio_config/` 目录是 WDS 生成的**原始配置库**，按硬件版本分子目录存放，不要手动修改。
+- `radio_config.h` 是从 `radio_config/Si4463b1/` 复制过来的**当前使用**配置
+  （`radio_config_Si4463b1_pocsag_153.00_1200_2fsk_4.5.h`，153.00 MHz / 1200 bps / 2FSK /
+  Direct TX，WDS 3.2.11 生成），射频寄存器部分**不要手改**。
+- 更换 C2 芯片时：从 `radio_config/Si4463c2/` 选对应配置**整体替换** `radio_config.h`
+  （保持文件名不变），并按 WDS 要求加载 C2 patch。
+- 换配置后**检查两处用户参数**（文件顶部 `USER DEFINED PARAMETERS` 段）：
+  1. `RADIO_CONFIGURATION_DATA_RSYMB_SPS` — 必须等于新配置的 WDS `Rsymb`
+     （512/1200/1600 sps）。驱动用它推导 `Si446x_txDirectWrite()` 的位敲击码率；
+     缺失时回退 1200 sps 并给编译警告。
+  2. `RADIO_CONFIGURATION_DATA_RADIO_XO_FREQ` — WDS 自带（30 MHz），
+     `Si446x_setFrequencyKHz()` 运行时读取，换晶振只需改这里。
+- 芯片版本可通过 `Si446x_getInfo()` 的 `romId` 字段确认（3 = B1B，6 = C2A）。
+
 ### 5.1 使用 Silicon Labs WDS 生成配置
 
 1. 打开 **WDS (Wireless Development Suite)**
-2. 选择设备: **Si4463 Rev B1**
+2. 选择设备: **Si4463 Rev B1**（C2 芯片选 Rev C2）
 3. 配置参数（参考下面的示例）
 4. 点击 **Generate** → 复制输出的 `radio_config.h`
 
@@ -285,7 +321,7 @@ PA:         0x08 (Class E), GAIN = 127
 如果你需要修改配置（数据速率、频偏、调制方式等）：
 
 1. 在 WDS 中修改参数并重新生成
-2. 替换 `lib/Si446x/radio_config.h`
+2. 替换 `lib/si4463/radio_config.h`
 3. **必须同时修改** 以下两处：
    - `RF_GPIO_PIN_CFG` — 去掉所有 `0x40` 上拉位
    - `RF_FRR_CTL_A_MODE_4` — 将 FRR_B_MODE 改为 `0x00`（晶振状态）：
@@ -312,7 +348,9 @@ fRF = fXO / OUTDIV × (FC_INTE + 1 + FC_FRAC / 2^19)
 ```
 
 其中：
-- `fXO` = 晶振频率（通常 **30 MHz**）
+- `fXO` = 晶振频率（`Si446x_setFrequencyKHz()` 运行时读取
+  `RADIO_CONFIGURATION_DATA_RADIO_XO_FREQ`，当前 **30 MHz**；换晶振改
+  `radio_config.h` 即可，无需改代码）
 - `OUTDIV` = 输出分频比（根据频段自动选择 2/3/4/6/8/12）
 - `FC_INTE` = 整数部分（8 位寄存器 FREQ_CONTROL_INTE）
 - `FC_FRAC` = 小数部分（20 位寄存器，**bit 19 恒为 1**）
@@ -385,7 +423,7 @@ Serial.printf("Freq: %u.%03u MHz\n", fKHz / 1000, fKHz % 1000);
 Direct TX 模式下，数据不经过 SPI FIFO，而是直接从 **GPIO0** 引脚串行输出。Si4463 内部 PLL 以配置的数据速率产生位时钟，GPIO0 上的电平被直接调制到载波上。
 
 ```
-MCU (GPIO21) ──→ Si4463 GPIO0 ──→ (FSK 调制) ──→ PA ──→ 天线
+MCU (GPIO16) ──→ Si4463 GPIO0 ──→ (FSK 调制) ──→ PA ──→ 天线
 ```
 
 ### 7.2 时序
@@ -619,9 +657,9 @@ Serial.printf("Firmware ext:%d branch:%d\n",
 **原因**: WDS 配置中 SDO 引脚的内部上拉 (`0x40`) 导致 MISO 在芯片准备好前读到 0xFF，被误认为 CTS 就绪。
 
 **解决**:
-1. 在 `radio_config.h` 中找到 `RF_GPIO_PIN_CFG` 行
+1. 优先在 WDS 中取消 GPIO Pull-up 重新生成配置；若手改，在 `radio_config.h` 中找到 `RF_GPIO_PIN_CFG` 行
 2. 将第 6、7 字节的 `0x40` 改为 `0x00`
-3. 或者直接在 WDS 重新生成时取消 GPIO Pull-up 选项
+3. 或者直接在 WDS 重新生成时取消 GPIO Pull-up 选项（推荐，保持 radio_config.h 为纯生成物）
 
 ```
 // ❌ 改前
@@ -635,10 +673,11 @@ Serial.printf("Firmware ext:%d branch:%d\n",
 
 **原因**: AVR 库在 ISR 中调用了 `detachInterrupt()` 和 `attachInterrupt()`，ESP32 架构不允许在 ISR 中操作中断注册。
 
-**解决**: 设置 `SI446X_IRQ = -1`，使用轮询模式：
+**解决**: 将 IRQ 传 -1, 使用轮询模式：
 
 ```c
-#define SI446X_IRQ  -1   // 禁用中断
+// setPins 第 3 个参数传 -1 即可禁用中断
+Si446x_setPins(10, 5, -1, 16, 12, 11, 13);
 
 // loop() 中周期调用
 void loop()
@@ -712,11 +751,12 @@ si4463-demo/
 │   └── main.cpp                   # 主程序（Direct TX Beacon）
 ├── lib/
 │   └── Si446x/
-│       ├── Si446x.h               # 公共 API 头文件
+│       ├── Si446x.h               # 公共头文件（API + SPI 行为配置 + 命令/属性定义，
+│       │                          #   原 Si446x_config.h / Si446x_defs.h 已合并于此;
+│       │                          #   引脚由应用方 setPins 传入, 见 §2.3）
 │       ├── Si446x.cpp             # 库实现
-│       ├── Si446x_config.h        # 引脚配置
-│       ├── Si446x_defs.h          # 命令码、属性地址、枚举定义
-│       └── radio_config.h         # WDS 生成的配置数据
+│       ├── radio_config.h         # WDS 生成的配置数据（B1，勿手改）
+│       └── radio_config/          # WDS 原始配置库（B1B/C2A 按硬件版本分目录）
 └── wds/
     └── si4463_revb1_direct_30m_tx.xml  # WDS 项目文件
 ```

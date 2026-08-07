@@ -202,12 +202,16 @@ bool Transmitter::send(const Config& cfg) {
       m_lastEncodeError = true;  // 编码失败是确定性错误, 调用方不应重试
       return false;
     }
+    // 设置以寻呼机为参照: NORMAL=寻呼机正相, 内部取反位流以补偿
+    // 本板 Si4463 直接模式固有的链路反相 (实测: 正相寻呼机 ↔ normal)。
     bool invert = (cfg.phase == PhaseType::NORMAL);
     return sendFlexRaw(encoder.getData(), len, cfg.baudRate, invert);
   }
 
   // ---- POCSAG: 预编码 → sendPocsagRaw (与 FLEX 对称) ----
   PocsagEncoder& encoder = m_pocsagEncoder;
+  // 设置以寻呼机为参照: NORMAL=寻呼机正相, 内部取反位流以补偿
+  // 本板 Si4463 直接模式固有的链路反相 (实测: 正相寻呼机 ↔ normal)。
   bool invert = (cfg.phase == PhaseType::NORMAL);
 
   String gbStr;
@@ -225,7 +229,8 @@ bool Transmitter::send(const Config& cfg) {
 
   const char toneLetter = "ABCD"[static_cast<int>(cfg.tone) & 3];
   const char* modeName = (cfg.msgType == MsgType::NUMERIC) ? "NUM" : "ALPHA";
-  const char* phaseName = invert ? "INV" : "NRM";
+  // 日志用设置视角 (与 CONFIG/API 日志一致): 位流极性是设置的确定性取反。
+  const char* phaseName = (cfg.phase == PhaseType::NORMAL) ? "NRM" : "INV";
   Serial.printf("TX[%d][POCSAG] addr=%llu tone=%c baud=%d %s %s \"%s\"\n",
                 m_txCount, cfg.address, toneLetter, cfg.baudRate,
                 modeName, phaseName, cfg.message);

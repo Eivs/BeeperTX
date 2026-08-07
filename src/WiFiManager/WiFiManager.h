@@ -66,8 +66,8 @@ public:
   // ---- 凭据管理 ----
 
   /**
-   * @brief 保存 WiFi 凭据到 NVS, 然后尝试连接。
-   *        连接成功后约 1 秒重启进入 STA 模式。
+   * @brief 保存 WiFi 凭据到 NVS 并立即尝试连接 (无需重启)。
+   *        连接结果由 loop() 维护: 成功 → STA 模式; 10s 超时 → 回退 AP。
    */
   void setCredentials(const char* ssid, const char* password);
 
