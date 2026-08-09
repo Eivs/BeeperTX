@@ -54,8 +54,10 @@ Si4463 是 Silicon Labs 的 Sub-GHz 射频收发器芯片，支持：
 | SCLK        | GPIO12   | SPI 时钟 |
 | SDI/MOSI    | GPIO11   | SPI 主出从入 |
 | SDO/MISO    | GPIO13   | SPI 主入从出 |
-| nIRQ        | GPIO9    | 中断输出 (低有效) |
+| nIRQ        | (可选)   | 中断输出 (低有效)。ESP32 固件默认轮询模式 (`PIN_NIRQ=-1`), 可不接; 若接, GPIO 由应用方定义 |
 | GPIO0       | GPIO16   | Direct TX 数据输出 |
+| VDD         | 3V3      | 电源 (3.3V) |
+| GND         | GND      | 共地 |
 
 ### 2.2 天线开关 (RF Switch)
 
