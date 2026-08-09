@@ -61,12 +61,24 @@ Si4463 是 Silicon Labs 的 Sub-GHz 射频收发器芯片，支持：
 
 ### 2.2 天线开关 (RF Switch)
 
-若采用单天线半双工设计，Si4463 的 GPIO2/GPIO3 可输出状态信号控制 RF 开关：
+若采用单天线半双工设计，Si4463 的 GPIO2/GPIO3 可输出状态信号控制 RF 开关
+（由芯片直接驱动，**不占用 MCU 引脚**）：
 
 | Si4463 引脚 | 模式值 | TX 时 | RX 时 |
 |-------------|--------|-------|-------|
 | GPIO2       | 0x21 (TX_STATE) | HIGH | LOW |
 | GPIO3       | 0x20 (RX_STATE) | LOW | HIGH |
+
+芯片侧引脚完整分配（WDS 配置 + `Si446x_configRFswitch()`）:
+
+| Si4463 引脚 | 模式 | 用途 |
+|-------------|------|------|
+| GPIO0 | INPUT | Direct TX 数据输入 (bit-bang 调制) |
+| GPIO1 | TX_DATA_CLK | 数据时钟输出 (外部数据源同步, 通常不用) |
+| GPIO2 | TX_STATE | RF 开关: 发射时 HIGH |
+| GPIO3 | RX_STATE | RF 开关: 接收时 HIGH |
+
+未使用 RF 开关时 GPIO1/2/3 可全部悬空，不影响功能。
 
 ### 2.3 引脚配置 (应用方定义)
 
