@@ -18,7 +18,11 @@
 - **中英文混排**: UTF-8 消息自动转 GB2312，借助 `\x0E`(SO) / `\x0F`(SI) 控制字符
   在中英文模式间切换，一条消息内中英文任意混排
 - **宽频覆盖**: 119–1050 MHz，6 个频段自动选择（OUTDIV / CLKGEN_BAND），
-  频率、功率、码率均可动态配置，无需重新编译
+  频率、功率动态配置，无需重新编译
+- **单配置兼容 POCSAG / FLEX**: 固定 **±4.5 kHz 2FSK** 调制（WDS `Fdev=4500`,
+  `MOD_type=2`），两种协议共用同一份 Si4463 配置（`radio_config.h`）。
+  切换频率走 `Si446x_setFrequencyKHz()`（EZ 频率编程），切换码率走 GPIO0
+  bit-bang 定时（`bitTimeUs()`），均即时生效，**无需切换/重载芯片配置**
 - **直接调制 (Direct TX)**: GPIO0 bit-bang 直接 FSK 调制（非 FIFO），
   由独立 txTask 独占 Core 1 发射，时序精确
 - **异步发射架构**: Core 0 预编码 → FreeRTOS 队列 → txTask（Core 1）位敲击，
