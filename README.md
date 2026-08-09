@@ -528,6 +528,7 @@ ERR <CMD> code=<N> detail=<M>
 | tone | A / B / C / D | D | POCSAG 铃音/功能码 (仅 POCSAG; FLEX 不适用) |
 | baudRate | POCSAG: 512/1200, FLEX: 1600/2400/3200 | 1200 / 1600 | 码率 (bps, 按编码) |
 | msgType | NUMERIC / ALPHANUMERIC | ALPHANUMERIC | 消息类型 |
+| mailDrop | 0 / 1 | 0 | FLEX Mail Drop 标志 (仅 FLEX ALPHA 生效, 置首字 bit20) |
 | address | 0–2097151 (POCSAG) | 1000 | 寻呼地址 / CAPCODE |
 | message | UTF-8, 最大 1023 字节 | "BeeperTX OK" | 消息内容 (超协议限制在 HTTP 响应前显式拒绝) |
 
