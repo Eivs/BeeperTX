@@ -1,77 +1,179 @@
 /**
  * @file    API.cpp
- * @brief   命令调度器实现 — 连接 API 定义与 Transmitter/HW 层
+ * @brief   命令调度器实现 — CommandDispatcher + C 接口薄封装
  *
- * 本文件实现 api_dispatch(), 负责:
- *   1. 参数校验
- *   2. 调用 Transmitter / Si446x 执行实际操作
- *   3. 填充 CmdResponse
+ * 消除全局单例 Service Locator:
+ *   - CommandDispatcher : 命令分发 + 状态持有 (配置/状态缓存/发射计数)
+ *   - ConfigStore       : TxConfig 的 NVS 持久化 (CMD_SAVE_CONFIG)
+ *   - LogRingBuffer     : 发射日志环形缓冲区
+ *   - TxQueue           : 待发射/待扫描/待配网 的异步请求队列
  *
- * 串口控制、Web 控制等传输层各自将原始输入解析为 CmdRequest,
- * 调用 api_dispatch() 后序列化 CmdResponse 返回。
+ * 依赖通过 setTransmitter/setWiFiManager/setSweeper 显式注入,
+ * 不再使用模块级 static 可变全局。对外保留 api_* C 函数作为
+ * 薄封装, 调用方 (SerialConsole/WebServer) 零改动接入。
  */
 
 #include "API.h"
 #include "Transmitter.h"
 #include "WiFiManager.h"
 #include "Si446x.h"
+#include "Sweeper.h"
+#include "ConfigStore.h"
+#include "LogRingBuffer.h"
+#include "TxQueue.h"
+#include "FlexEncoder.h"
+#include "Pocsag.h"
 #include <Arduino.h>
 #include <cstring>
 
-// ============================================================
-// 全局状态
-// ============================================================
-
-static TxConfig       s_config;       // 当前发射配置
-static DeviceStatus   s_status;       // 设备状态缓存 (每次 GET_STATUS 刷新)
-static Transmitter*   s_tx  = nullptr;// Transmitter 实例
-static WiFiManager*   s_wifi = nullptr;// WiFiManager 实例
-static uint32_t       s_txCount = 0;
-static bool           s_pendingTx = false;      // 待发射标记 (在主循环执行)
-static char           s_pendingTxMsg[256];      // 待发射消息
-static bool           s_pendingScan = false;    // 待扫描 WiFi
-static bool           s_pendingWifiSet = false; // 待设置 WiFi
-static char           s_pendingWifiSsid[33];
-static char           s_pendingWifiPass[65];
-static String         s_scanCache = "[]";       // 扫描结果缓存
-
-// ============================================================
-// 日志环形缓冲区
-// ============================================================
-
-#define LOG_MAX_LINES 50
-#define LOG_LINE_LEN  128
-static char s_logBuf[LOG_MAX_LINES][LOG_LINE_LEN];
-static int  s_logHead = 0;   // 下一条写入位置
-static int  s_logCount = 0;  // 已写入条数
-static portMUX_TYPE s_logMux = portMUX_INITIALIZER_UNLOCKED;
+namespace {
 
 // ============================================================
 // 参数校验
 // ============================================================
 
-static bool isFreqValid(uint32_t kHz) {
+bool isFreqValid(uint32_t kHz) {
   return kHz >= 119000 && kHz <= 1050000;
 }
 
-static bool isBaudRateValid(uint16_t br) {
-  return br == 512 || br == 1200 || br == 1600 ||
-         br == 2400 || br == 3200 || br == 6400;
+bool isBaudRateValid(EncodingType enc, uint16_t br) {
+  // 码率按编码区分: POCSAG 512/1200, FLEX 1600/2400/3200
+  if (enc == EncodingType::POCSAG) return br == 512 || br == 1200;
+  return br == 1600 || br == 2400 || br == 3200;
 }
 
-static bool isPocsagAddrValid(uint32_t addr) {
-  return addr <= 0x1FFFFF;  // 21-bit
+bool isPocsagAddrValid(uint32_t addr) {
+  // 0 非法: 无寻呼机配地址 0 (用户实测地址 0 触发 FLEX 编码失败→无限重试)
+  return addr >= 1 && addr <= 0x1FFFFF;  // 21-bit
 }
 
-static bool isTxPowerValid(uint8_t pwr) {
+/** FLEX capcode 合法性 (短地址 1..1933312 / 长地址 2101249..4297068542) */
+bool isFlexCapcodeValid(uint32_t cap) {
+  return (cap >= 1 && cap <= 1933312) ||
+         (cap >= 2101249 && cap <= 4297068542);
+}
+
+bool isTxPowerValid(uint8_t pwr) {
   return pwr <= 127;
 }
+
+/** 每命令期望的负载类型 (用于 union 判别校验) */
+PayloadType expectedPayload(CmdID cmd) {
+  switch (cmd) {
+    case CmdID::CMD_SET_CONFIG:  return PayloadType::SET_CONFIG;
+    case CmdID::CMD_TRANSMIT:    return PayloadType::TRANSMIT_MSG;
+    case CmdID::CMD_SET_WIFI:    return PayloadType::WIFI_CRED;
+    case CmdID::CMD_GET_LOG:     return PayloadType::LOG_COUNT;
+    case CmdID::CMD_SWEEP_START: return PayloadType::SWEEP_START;
+    default:                     return PayloadType::NONE;
+  }
+}
+
+const char* cmdName(CmdID cmd) {
+  switch (cmd) {
+  case CmdID::CMD_PING:          return "PING";
+  case CmdID::CMD_GET_STATUS:    return "STATUS";
+  case CmdID::CMD_GET_CONFIG:    return "GET_CONFIG";
+  case CmdID::CMD_RESET:         return "RESET";
+  case CmdID::CMD_SET_CONFIG:    return "SET_CONFIG";
+  case CmdID::CMD_SAVE_CONFIG:   return "SAVE_CONFIG";
+  case CmdID::CMD_TRANSMIT:      return "TX";
+  case CmdID::CMD_ABORT:         return "ABORT";
+  case CmdID::CMD_SET_WIFI:      return "SET_WIFI";
+  case CmdID::CMD_SCAN_WIFI:     return "SCAN_WIFI";
+  case CmdID::CMD_GET_WIFI_STATUS: return "GET_WIFI_STATUS";
+  case CmdID::CMD_GET_LOG:       return "GET_LOG";
+  case CmdID::CMD_SWEEP_START:   return "SWEEP_START";
+  case CmdID::CMD_SWEEP_STOP:    return "SWEEP_STOP";
+  case CmdID::CMD_SWEEP_STATUS:  return "SWEEP_STATUS";
+  default:                       return "UNKNOWN";
+  }
+}
+
+// ============================================================
+// CommandDispatcher — 命令分发 + 状态持有
+// ============================================================
+
+class CommandDispatcher {
+public:
+  void init();
+  void dispatch(const CmdRequest* req, CmdResponse* resp);
+  void loop();
+
+  // ---- 依赖注入 ----
+  void setTransmitter(Transmitter* tx) { m_tx = tx; }
+  void setWiFiManager(WiFiManager* wifi) { m_wifi = wifi; }
+  void setSweeper(Sweeper* sweeper) { m_sweeper = sweeper; }
+  void setRadioReady(bool ready) { m_radioReady = ready; }
+
+  // ---- 查询 ----
+  TxConfig getConfig() const { return m_config; }
+  void triggerScan() { m_queue.triggerScan(); }
+  void getScanCache(char* buf, size_t size) { m_queue.getScanCache(buf, size); }
+
+  // ---- 日志 ----
+  void log(const char* line) {
+    // 同步输出到串口 (方便调试)
+    Serial.print(F("[LOG] "));
+    Serial.println(line);
+    m_log.add(line);
+  }
+  void getLog(char* buf, size_t size) { m_log.get(buf, size); }
+  void getLogAfter(char* buf, size_t size, uint32_t after,
+                   uint32_t* seqOut, bool* wrappedOut) {
+    m_log.getAfter(buf, size, after, seqOut, wrappedOut);
+  }
+
+  // ---- 快捷入口 ----
+  RespCode sweepStartSimple(uint8_t mode, uint32_t* startOut, int* detailOut);
+
+private:
+  // 依赖 (构造注入, 显式设置)
+  Transmitter* m_tx      = nullptr;
+  WiFiManager* m_wifi    = nullptr;
+  Sweeper*     m_sweeper = nullptr;
+  bool         m_radioReady = true;  //!< Si4463 可用 (main 初始化失败时置 false, 后台重试)
+
+  // 组件
+  ConfigStore   m_store;
+  LogRingBuffer m_log;
+  TxQueue       m_queue;
+
+  // 状态
+  TxConfig     m_config;
+  DeviceStatus m_status;
+  bool         m_statusCached = false;  //!< partId/romId/chipRev 已缓存 (静态信息)
+  uint32_t     m_statusLastQueryMs = 0; //!< 上次实时 SPI 查询时刻 (冷却限速)
+  uint32_t     m_txCount = 0;
+
+  // 状态查询限速: 避免发射间隙/高频轮询对 Si4463 频繁发 SPI 命令
+  static const uint32_t STATUS_QUERY_MIN_INTERVAL_MS = 500;
+
+  // ---- Handlers ----
+  void handlePing(const CmdRequest* req, CmdResponse* resp);
+  void handleGetStatus(const CmdRequest* req, CmdResponse* resp);
+  void handleGetConfig(const CmdRequest* req, CmdResponse* resp);
+  void handleSetConfig(const CmdRequest* req, CmdResponse* resp);
+  void handleSaveConfig(const CmdRequest* req, CmdResponse* resp);
+  void handleTransmit(const CmdRequest* req, CmdResponse* resp);
+  void handleAbort(const CmdRequest* req, CmdResponse* resp);
+  void handleReset(const CmdRequest* req, CmdResponse* resp);
+  void handleSetWiFi(const CmdRequest* req, CmdResponse* resp);
+  void handleScanWiFi(const CmdRequest* req, CmdResponse* resp);
+  void handleGetWifiStatus(const CmdRequest* req, CmdResponse* resp);
+  void handleGetLog(const CmdRequest* req, CmdResponse* resp);
+  void handleSweepStart(const CmdRequest* req, CmdResponse* resp);
+  void handleSweepStop(const CmdRequest* req, CmdResponse* resp);
+  void handleSweepStatus(const CmdRequest* req, CmdResponse* resp);
+
+  Transmitter::Config makeTxConfig() const;
+};
 
 // ============================================================
 // Handler: PING
 // ============================================================
 
-static void handlePing(const CmdRequest* req, CmdResponse* resp) {
+void CommandDispatcher::handlePing(const CmdRequest* req, CmdResponse* resp) {
   resp->cmd  = CmdID::CMD_PING;
   resp->code = RespCode::OK;
   // detail 返回系统运行毫秒数, 用于延迟估算
@@ -82,116 +184,224 @@ static void handlePing(const CmdRequest* req, CmdResponse* resp) {
 // Handler: GET_STATUS
 // ============================================================
 
-static void handleGetStatus(const CmdRequest* req, CmdResponse* resp) {
+void CommandDispatcher::handleGetStatus(const CmdRequest* req, CmdResponse* resp) {
   resp->cmd  = CmdID::CMD_GET_STATUS;
   resp->code = RespCode::OK;
 
-  si446x_info_t info;
-  Si446x_getInfo(&info);
+  // 静态芯片信息 (partId/romId/chipRev) 只在首次查询 (Radio 就绪后), 之后缓存。
+  // 避免 webUI 每 3s 轮询触发 5 次 SPI 事务 (每次 doAPI 在 Si4463 忙时可
+  // 忙等 400ms 且持跨核递归锁) → webUI 高延时 + 阻塞 txTask 的 enterTx/exitTx。
+  if (!m_statusCached) {
+    si446x_info_t info;
+    Si446x_getInfo(&info);
+    if (info.part != 0) {
+      m_status.partId       = info.part;
+      m_status.romId        = info.romId;
+      m_status.chipRev      = info.chipRev;
+      m_statusCached        = true;
+    }
+  }
 
-  s_status.partId       = info.part;
-  s_status.romId        = info.romId;
-  s_status.chipRev      = info.chipRev;
-  s_status.state        = (uint8_t)Si446x_getState();
-  s_status.freqKHz      = Si446x_getFrequencyKHz();
-  s_status.txPower      = Si446x_getTxPower();
-  s_status.rssiDbm      = Si446x_getRSSI();
-  s_status.temperatureC = 0;          // Si4463 无温度传感器, 预留
-  s_status.uptimeS      = millis() / 1000;
-  s_status.txCount      = s_txCount;
+  // 发射期间 (txTask 持锁/位敲击): 跳过实时 SPI 查询, 用缓存状态。
+  // Si4463 处于 Direct TX 时不响应多数命令, doAPI 会忙等到 CTS 超时
+  // (每个查询最多 400ms), 持跨核锁阻塞 txTask → 发射停滞 + WDT 复位
+  // (用户实测"追码自动停止"的根因)。
+  // 另: 非发射期也限速 (冷却窗口), 避免追码批间隙紧贴 Si4463 状态机
+  // 恢复窗口插入查询 (CTS 不响应 → 忙等), 同时缓解 webUI 高延时。
+  const uint32_t nowMs = millis();
+  const bool txBusy = m_tx && m_tx->isBusy();
+  if (!txBusy && (nowMs - m_statusLastQueryMs >= STATUS_QUERY_MIN_INTERVAL_MS)) {
+    m_status.state   = (uint8_t)Si446x_getState();
+    m_status.freqKHz = Si446x_getFrequencyKHz();
+    m_status.txPower = Si446x_getTxPower();
+    m_status.rssiDbm = Si446x_getRSSI();
+    m_statusLastQueryMs = nowMs;
+  } else if (txBusy) {
+    m_status.state   = SI446X_STATE_TX;  // 正在发射
+    // freqKHz/txPower/rssi 保持上次缓存值 (发射中 RSSI 无意义)
+  }
+  m_status.temperatureC = 0;          // Si4463 无温度传感器, 预留
+  m_status.uptimeS      = millis() / 1000;
+  m_status.txCount      = m_txCount;
 
-  resp->status = s_status;
+  resp->status = m_status;
 }
 
 // ============================================================
 // Handler: GET_CONFIG
 // ============================================================
 
-static void handleGetConfig(const CmdRequest* req, CmdResponse* resp) {
+void CommandDispatcher::handleGetConfig(const CmdRequest* req, CmdResponse* resp) {
   resp->cmd    = CmdID::CMD_GET_CONFIG;
   resp->code   = RespCode::OK;
-  resp->config = s_config;
+  resp->config = m_config;
 }
 
 // ============================================================
 // Handler: SET_CONFIG
 // ============================================================
 
-static void handleSetConfig(const CmdRequest* req, CmdResponse* resp) {
+void CommandDispatcher::handleSetConfig(const CmdRequest* req, CmdResponse* resp) {
+  // 扫描期间禁止修改配置
+  if (m_sweeper && m_sweeper->isRunning()) {
+    resp->cmd = CmdID::CMD_SET_CONFIG; resp->code = RespCode::ERR_BUSY;
+    resp->detail = -10;
+    return;
+  }
+  // 发射中 (队列积压或 txTask 位敲击) 修改频率/功率会与 Direct TX 冲突:
+  // Si4463 处于 TX 时 CTS 超时忙等 (每次最多 400ms), 命令静默失败。
+  if (m_tx && m_tx->isBusy()) {
+    resp->cmd = CmdID::CMD_SET_CONFIG; resp->code = RespCode::ERR_BUSY;
+    resp->detail = -11;
+    return;
+  }
+
   const TxConfig& c = req->setConfig;
 
   if (!isFreqValid(c.freqKHz)) {
     resp->cmd = CmdID::CMD_SET_CONFIG; resp->code = RespCode::ERR_PARAM;
     resp->detail = -1;
-    api_log("SET_CONFIG: invalid freq");
+    log("SET_CONFIG: invalid freq");
     return;
   }
-  if (!isBaudRateValid(c.baudRate)) {
+  if (!isBaudRateValid(c.encoding, c.baudRate)) {
     resp->cmd = CmdID::CMD_SET_CONFIG; resp->code = RespCode::ERR_PARAM;
     resp->detail = -2;
-    api_log("SET_CONFIG: invalid baudRate");
+    log("SET_CONFIG: invalid baudRate");
     return;
   }
   if (c.encoding == EncodingType::POCSAG && !isPocsagAddrValid(c.address)) {
     resp->cmd = CmdID::CMD_SET_CONFIG; resp->code = RespCode::ERR_PARAM;
     resp->detail = -3;
-    api_log("SET_CONFIG: invalid POCSAG address");
+    log("SET_CONFIG: invalid POCSAG address");
+    return;
+  }
+  if (c.encoding == EncodingType::FLEX && !isFlexCapcodeValid(c.address)) {
+    resp->cmd = CmdID::CMD_SET_CONFIG; resp->code = RespCode::ERR_PARAM;
+    resp->detail = -3;
+    log("SET_CONFIG: invalid FLEX capcode");
     return;
   }
   if (!isTxPowerValid(c.txPower)) {
     resp->cmd = CmdID::CMD_SET_CONFIG; resp->code = RespCode::ERR_PARAM;
     resp->detail = -4;
-    api_log("SET_CONFIG: invalid txPower");
+    log("SET_CONFIG: invalid txPower");
     return;
   }
 
-  s_config = c;
+  // FLEX 无极性概念: 强制直发 (invert=false), 防 NORMAL 误配导致接收机无法同步
+  // (web/串口两条入口都经此; 出厂默认 NORMAL 仅对 POCSAG 有意义)
+  TxConfig effective = c;
+  if (effective.encoding == EncodingType::FLEX) {
+    effective.phase = PhaseType::INVERTED;
+  }
+
+  m_config = effective;
 
   // 立即生效: 更新频率和功率
-  Si446x_setFrequencyKHz(c.freqKHz);
-  Si446x_setTxPower(c.txPower);
+  Si446x_setFrequencyKHz(effective.freqKHz);
+  Si446x_setTxPower(effective.txPower);
 
   resp->cmd  = CmdID::CMD_SET_CONFIG;
   resp->code = RespCode::OK;
 }
 
 // ============================================================
+// Handler: SAVE_CONFIG (将当前配置持久化到 NVS)
+// ============================================================
+
+void CommandDispatcher::handleSaveConfig(const CmdRequest* req, CmdResponse* resp) {
+  resp->cmd  = CmdID::CMD_SAVE_CONFIG;
+  resp->code = RespCode::OK;
+
+  if (!m_store.save(m_config)) {
+    resp->code = RespCode::ERR_HW;
+    resp->detail = -1;
+    log("SAVE_CONFIG: NVS write failed");
+    return;
+  }
+  log("SAVE_CONFIG: saved to NVS");
+}
+
+// ============================================================
 // Handler: TRANSMIT
 // ============================================================
 
-static Transmitter::Config makeTxConfig() {
+Transmitter::Config CommandDispatcher::makeTxConfig() const {
+  // 枚举已统一 (ProtocolTypes.h), 无需强转。
   Transmitter::Config c;
-  c.encoding = (s_config.encoding == EncodingType::POCSAG)
-                   ? Transmitter::POCSAG : Transmitter::FLEX;
-  c.phase    = (s_config.phase == PhaseType::NORMAL)
-                   ? Transmitter::NORMAL : Transmitter::INVERTED;
-  c.baudRate = s_config.baudRate;
-  c.tone     = static_cast<Transmitter::Tone>(s_config.tone);
-  c.address  = s_config.address;
-  memcpy(c.message, s_config.message, sizeof(c.message));
-  c.msgType  = (s_config.msgType == MsgType::NUMERIC)
-                   ? Transmitter::NUMERIC : Transmitter::ALPHANUMERIC;
+  c.encoding = m_config.encoding;
+  c.phase    = m_config.phase;
+  c.baudRate = m_config.baudRate;
+  c.tone     = m_config.tone;
+  c.address  = m_config.address;
+  memcpy(c.message, m_config.message, sizeof(c.message));
+  c.msgType  = m_config.msgType;
+  c.mailDrop = m_config.mailDrop;
   return c;
 }
 
-static void handleTransmit(const CmdRequest* req, CmdResponse* resp) {
-  if (s_pendingTx) {
+void CommandDispatcher::handleTransmit(const CmdRequest* req, CmdResponse* resp) {
+  // 射频离线 (Si4463 初始化失败, 后台重试中) — 拒绝发射
+  if (!m_radioReady) {
+    resp->cmd = CmdID::CMD_TRANSMIT; resp->code = RespCode::ERR_HW;
+    resp->detail = -2;
+    return;
+  }
+
+  // 扫描期间禁止单次发射
+  if (m_sweeper && m_sweeper->isRunning()) {
+    resp->cmd = CmdID::CMD_TRANSMIT; resp->code = RespCode::ERR_BUSY;
+    resp->detail = -10;
+    return;
+  }
+
+  // 地址校验 (0 非法; FLEX capcode 范围) — 防止非法地址入队后编码失败
+  // 被 API loop 误判为队列满而无限重试刷日志 (用户实测地址 0 触发)
+  if (m_config.address == 0) {
+    resp->cmd = CmdID::CMD_TRANSMIT; resp->code = RespCode::ERR_PARAM;
+    resp->detail = -5;
+    return;
+  }
+  if (m_config.encoding == EncodingType::FLEX &&
+      !isFlexCapcodeValid(m_config.address)) {
+    resp->cmd = CmdID::CMD_TRANSMIT; resp->code = RespCode::ERR_PARAM;
+    resp->detail = -6;
+    return;
+  }
+
+  // 消息长度预检 (轻量: 仅 UTF-8 strlen, 不调 GB.get 避免栈/堆压力)
+  // GB2312 字节数 ≤ UTF-8 字节数 (中文 3→2), 因此 strlen 是安全的上界。
+  // 精确限制由 Transmitter::send() 在编码时二次校验。
+  {
+    const char* msg = (req->transmitMsg[0] != '\0') ? req->transmitMsg : m_config.message;
+    size_t len = strlen(msg);
+    if (m_config.encoding == EncodingType::FLEX &&
+        m_config.msgType != MsgType::NUMERIC) {
+      if (len > FlexEncoder::MAX_ALPHA_CHARS) {
+        resp->cmd = CmdID::CMD_TRANSMIT; resp->code = RespCode::ERR_PARAM;
+        resp->detail = -7;
+        return;
+      }
+    } else if (m_config.encoding == EncodingType::POCSAG &&
+               m_config.msgType == MsgType::ALPHANUMERIC) {
+      if (len > MAX_MESSAGE_LEN) {
+        resp->cmd = CmdID::CMD_TRANSMIT; resp->code = RespCode::ERR_PARAM;
+        resp->detail = -7;
+        return;
+      }
+    }
+  }
+
+  if (!m_queue.setPendingTx(req->transmitMsg)) {
     resp->cmd = CmdID::CMD_TRANSMIT; resp->code = RespCode::ERR_BUSY;
     resp->detail = -1;
     return;
   }
-  if (!s_tx) {
+  if (!m_tx) {
     resp->cmd = CmdID::CMD_TRANSMIT; resp->code = RespCode::ERR_HW;
+    m_queue.consumePendingTx(nullptr, 0);  // 撤销入队
     return;
-  }
-
-  // 设置待发射标记, 由 api_loop() 在主循环中执行 (避免阻塞 async_tcp 等任务)
-  s_pendingTx = true;
-  if (req->transmitMsg[0] != '\0') {
-    strncpy(s_pendingTxMsg, req->transmitMsg, sizeof(s_pendingTxMsg) - 1);
-    s_pendingTxMsg[sizeof(s_pendingTxMsg) - 1] = '\0';
-  } else {
-    s_pendingTxMsg[0] = '\0';
   }
 
   resp->cmd    = CmdID::CMD_TRANSMIT;
@@ -203,27 +413,37 @@ static void handleTransmit(const CmdRequest* req, CmdResponse* resp) {
 // Handler: ABORT
 // ============================================================
 
-static void handleAbort(const CmdRequest* req, CmdResponse* resp) {
+void CommandDispatcher::handleAbort(const CmdRequest* req, CmdResponse* resp) {
   resp->cmd  = CmdID::CMD_ABORT;
   resp->code = RespCode::OK;
+  // 扫描运行中: 整体停止 (stop() 内部先中止发射, 再恢复频率);
+  // 否则仅中止当前发射 (清空队列 + 设 abort 标志, ≤1 bit 内停止)。
+  if (m_sweeper && m_sweeper->isRunning()) {
+    m_sweeper->stop();
+  } else if (m_tx) {
+    m_tx->abortTx();
+  }
 }
 
 // ============================================================
 // Handler: GET_WIFI_STATUS (仅查询状态, 不触发扫描)
 // ============================================================
 
-static void handleGetWifiStatus(const CmdRequest* req, CmdResponse* resp) {
+void CommandDispatcher::handleGetWifiStatus(const CmdRequest* req, CmdResponse* resp) {
   resp->cmd = CmdID::CMD_GET_WIFI_STATUS;
 
-  if (!s_wifi) {
+  if (!m_wifi) {
     resp->code = RespCode::ERR_HW;
     resp->detail = -1;
     return;
   }
 
   memset(&resp->wifi, 0, sizeof(resp->wifi));
-  resp->wifi.state = (uint8_t)s_wifi->state();
+  resp->wifi.state = (uint8_t)m_wifi->state();
   resp->wifi.rssi  = -1;
+  // ssid/ip 此前从未填充 → /api/wifi/status 的 ip 恒为空, webUI wifi-ip 不显示
+  strncpy(resp->wifi.ssid, m_wifi->ssid(), sizeof(resp->wifi.ssid) - 1);
+  strncpy(resp->wifi.ip,   m_wifi->ipAddress(), sizeof(resp->wifi.ip) - 1);
   resp->code = RespCode::OK;
 }
 
@@ -231,7 +451,7 @@ static void handleGetWifiStatus(const CmdRequest* req, CmdResponse* resp) {
 // Handler: RESET
 // ============================================================
 
-static void handleReset(const CmdRequest* req, CmdResponse* resp) {
+void CommandDispatcher::handleReset(const CmdRequest* req, CmdResponse* resp) {
   resp->cmd    = CmdID::CMD_RESET;
   resp->code   = RespCode::OK;
   resp->detail = 0;
@@ -242,10 +462,10 @@ static void handleReset(const CmdRequest* req, CmdResponse* resp) {
 // Handler: SET_WIFI (非阻塞: 设置标记, 由主循环执行)
 // ============================================================
 
-static void handleSetWiFi(const CmdRequest* req, CmdResponse* resp) {
+void CommandDispatcher::handleSetWiFi(const CmdRequest* req, CmdResponse* resp) {
   resp->cmd = CmdID::CMD_SET_WIFI;
 
-  if (!s_wifi) {
+  if (!m_wifi) {
     resp->code = RespCode::ERR_HW;
     resp->detail = -1;
     return;
@@ -256,156 +476,187 @@ static void handleSetWiFi(const CmdRequest* req, CmdResponse* resp) {
     return;
   }
 
-  strncpy(s_pendingWifiSsid, req->wifiCred.ssid, sizeof(s_pendingWifiSsid) - 1);
-  strncpy(s_pendingWifiPass, req->wifiCred.password, sizeof(s_pendingWifiPass) - 1);
-  s_pendingWifiSet = true;
+  if (!m_queue.setPendingWifi(req->wifiCred.ssid, req->wifiCred.password)) {
+    resp->code = RespCode::ERR_BUSY;
+    resp->detail = -3;
+    return;
+  }
 
   resp->code = RespCode::OK;
 }
 
 // ============================================================
-// Handler: SCAN_WIFI (非阻塞: 触发后台扫描, 立即返回缓存结果)
+// Handler: SCAN_WIFI (非阻塞: 触发后台扫描, 立即返回)
 // ============================================================
 
-static void handleScanWiFi(const CmdRequest* req, CmdResponse* resp) {
+void CommandDispatcher::handleScanWiFi(const CmdRequest* req, CmdResponse* resp) {
   resp->cmd = CmdID::CMD_SCAN_WIFI;
 
-  if (!s_wifi) {
+  if (!m_wifi) {
     resp->code = RespCode::ERR_HW;
     resp->detail = -1;
     return;
   }
 
   // 触发后台扫描 (由 api_loop 在主循环中执行)
-  s_pendingScan = true;
+  m_queue.triggerScan();
 
-  // 立即返回缓存结果
+  // 立即返回当前 WiFi 状态 (扫描结果由 api_getScanCache() 提供)
   memset(&resp->wifi, 0, sizeof(resp->wifi));
-  resp->wifi.state = (uint8_t)s_wifi->state();
-  strncpy(resp->wifi.scanResult, s_scanCache.c_str(), sizeof(resp->wifi.scanResult) - 1);
+  resp->wifi.state = (uint8_t)m_wifi->state();
   resp->code = RespCode::OK;
 }
 
 // ============================================================
-// 日志操作
+// Handler: GET_LOG
 // ============================================================
 
-void api_log(const char* line) {
-  if (!line) return;
-  // 同步输出到串口 (方便调试)
-  Serial.print(F("[LOG] "));
-  Serial.println(line);
-
-  taskENTER_CRITICAL(&s_logMux);
-  strncpy(s_logBuf[s_logHead], line, LOG_LINE_LEN - 1);
-  s_logBuf[s_logHead][LOG_LINE_LEN - 1] = '\0';
-  s_logHead = (s_logHead + 1) % LOG_MAX_LINES;
-  if (s_logCount < LOG_MAX_LINES) s_logCount++;
-  taskEXIT_CRITICAL(&s_logMux);
+void CommandDispatcher::handleGetLog(const CmdRequest* req, CmdResponse* resp) {
+  resp->cmd  = CmdID::CMD_GET_LOG;
+  resp->code = RespCode::OK;
+  // 日志通过 api_getLog() 导出 (避免在联合体中放大响应), 此处仅回执
+  resp->detail = req->logCount;
 }
 
-void api_getLog(char* buf, size_t size) {
-  if (!buf || size == 0) return;
-  buf[0] = '\0';
+// ============================================================
+// Handler: SWEEP_START
+// ============================================================
 
-  taskENTER_CRITICAL(&s_logMux);
-  int start = (s_logCount < LOG_MAX_LINES) ? 0
-              : s_logHead;
-  int remaining = size - 1;
-  int pos = 0;
+void CommandDispatcher::handleSweepStart(const CmdRequest* req, CmdResponse* resp) {
+  resp->cmd = CmdID::CMD_SWEEP_START;
 
-  for (int i = 0; i < s_logCount && remaining > 2; i++) {
-    int idx = (start + i) % LOG_MAX_LINES;
-    size_t len = strlen(s_logBuf[idx]);
-    if (len == 0) continue;
-    if (pos + (int)len + 2 > (int)size - 1) break;
-    if (pos > 0) { buf[pos++] = '\n'; remaining--; }
-    strncpy(buf + pos, s_logBuf[idx], remaining);
-    pos += len;
-    remaining -= len;
+  if (!m_radioReady) {
+    resp->code = RespCode::ERR_HW;
+    resp->detail = -4;  // radio offline (Si4463 init 失败, 后台重试中)
+    return;
   }
-  buf[pos] = '\0';
-  taskEXIT_CRITICAL(&s_logMux);
-}
-
-// ============================================================
-// 注入函数
-// ============================================================
-
-void api_setTransmitter(Transmitter* tx) {
-  s_tx = tx;
-}
-
-void api_setWiFiManager(WiFiManager* wifi) {
-  s_wifi = wifi;
-}
-
-TxConfig api_getConfig() {
-  return s_config;
-}
-
-void api_triggerScan() {
-  s_pendingScan = true;
-}
-
-const char* api_getScanCache() {
-  return s_scanCache.c_str();
-}
-
-// ============================================================
-// Loop 调度 (由 main.cpp loop 调用)
-// ============================================================
-
-void api_loop() {
-  // WiFi 后台扫描 (非阻塞: 由主循环执行)
-  if (s_pendingScan && s_wifi) {
-    s_pendingScan = false;
-    s_scanCache = s_wifi->scanNetworks();
-    api_log("wifi scan complete");
+  if (!m_sweeper) {
+    resp->code = RespCode::ERR_HW;
+    resp->detail = -1;
+    return;
+  }
+  if (m_sweeper->isRunning()) {
+    resp->code = RespCode::ERR_BUSY;
+    resp->detail = -2;
+    return;
+  }
+  if (m_queue.isPendingTx()) {
+    resp->code = RespCode::ERR_BUSY;
+    resp->detail = -3;
+    return;
   }
 
-  // WiFi 凭据设置 (非阻塞: 由主循环执行)
-  if (s_pendingWifiSet && s_wifi) {
-    s_pendingWifiSet = false;
-    s_wifi->setCredentials(s_pendingWifiSsid, s_pendingWifiPass);
-    api_log("wifi credentials saved");
+  // mode 校验
+  uint8_t m = req->sweepStart.mode;
+  if (m > 1) {
+    resp->code = RespCode::ERR_PARAM;
+    resp->detail = -4;
+    return;
   }
 
-  // 待发射的单次 TX (非阻塞: 由主循环执行)
-  if (s_pendingTx && s_tx) {
-    char savedMsg[256] = {0};
-    bool msgOverride = (s_pendingTxMsg[0] != '\0');
-    if (msgOverride) {
-      strncpy(savedMsg, s_config.message, sizeof(savedMsg) - 1);
-      strncpy(s_config.message, s_pendingTxMsg, sizeof(s_config.message) - 1);
+  // 覆盖字段范围校验 (web 入口直接填 sweepStart, 无串口式解析校验;
+  // 越界值强转会静默当 FLEX/其他协议跑)
+  if ((req->sweepStart.encoding   >= 0 && req->sweepStart.encoding   > 1) ||
+      (req->sweepStart.phase      >= 0 && req->sweepStart.phase      > 1) ||
+      (req->sweepStart.tone       >= 0 && req->sweepStart.tone       > 3) ||
+      (req->sweepStart.msgType    >= 0 && req->sweepStart.msgType    > 1) ||
+      (req->sweepStart.intervalMs >= 0 &&
+       (req->sweepStart.intervalMs < 1 || req->sweepStart.intervalMs > 60000))) {
+    resp->code = RespCode::ERR_PARAM;
+    resp->detail = -5;
+    return;
+  }
+  // 码率按最终生效 encoding 校验 (未指定时继承当前配置)
+  if (req->sweepStart.baudRate >= 0) {
+    EncodingType effEnc = (req->sweepStart.encoding >= 0)
+        ? static_cast<EncodingType>(req->sweepStart.encoding)
+        : m_config.encoding;
+    if (!isBaudRateValid(effEnc, (uint16_t)req->sweepStart.baudRate)) {
+      resp->code = RespCode::ERR_PARAM;
+      resp->detail = -5;
+      return;
     }
+  }
 
-    // 日志: 完整发送参数
-    {
-      const char* encName = (s_config.encoding == EncodingType::POCSAG) ? "POCSAG" : "FLEX";
-      const char* phName  = (s_config.phase == PhaseType::NORMAL) ? "NRM" : "INV";
-      const char* tpName  = (s_config.msgType == MsgType::NUMERIC) ? "NUM" : "ALPHA";
-      char buf[256];
-      char toneL = "ABCD"[(uint8_t)s_config.tone & 3];
-      snprintf(buf, sizeof(buf),
-               "TX> %s %s %s addr=%lu freq=%ukHz baud=%u pw=%u tone=%c \"%s\"",
-               encName, phName, tpName,
-               (unsigned long)s_config.address,
-               s_config.freqKHz,
-               s_config.baudRate,
-               s_config.txPower,
-               toneL,
-               s_config.message);
-      api_log(buf);
-    }
+  // 构建 Sweeper 配置 — 发射参数从当前 m_config 继承, 覆盖字段可覆盖
+  Sweeper::Config cfg;
+  cfg.mode      = (m == 0) ? Sweeper::ADDR_SWEEP : Sweeper::FREQ_SWEEP;
+  cfg.addrStart = m_config.address;
+  cfg.freqStartKHz = m_config.freqKHz;
+  cfg.encoding = m_config.encoding;
+  cfg.phase    = m_config.phase;
+  cfg.tone     = m_config.tone;
+  cfg.msgType  = m_config.msgType;
+  cfg.baudRate = m_config.baudRate;
+  cfg.freqKHz   = m_config.freqKHz;
+  cfg.address   = m_config.address;
 
-    s_tx->send(makeTxConfig());
-    s_txCount++;
-    s_pendingTx = false;
+  // 可选覆盖字段 (>=0 才覆盖, -1=未指定); sweepStart 字段为协议线格式
+  // int16_t, 显式转回 ProtocolTypes 枚举 (值已由 handleSweepStart 校验)
+  if (req->sweepStart.encoding  >= 0) cfg.encoding  = static_cast<EncodingType>(req->sweepStart.encoding);
+  if (req->sweepStart.baudRate   >= 0) cfg.baudRate  = req->sweepStart.baudRate;
+  if (req->sweepStart.phase      >= 0) cfg.phase     = static_cast<PhaseType>(req->sweepStart.phase);
+  if (req->sweepStart.tone       >= 0) cfg.tone      = static_cast<ToneType>(req->sweepStart.tone);
+  if (req->sweepStart.msgType    >= 0) cfg.msgType   = static_cast<MsgType>(req->sweepStart.msgType);
+  if (req->sweepStart.intervalMs >= 0) cfg.intervalMs = (uint16_t)req->sweepStart.intervalMs;
 
-    if (msgOverride) {
-      strncpy(s_config.message, savedMsg, sizeof(s_config.message) - 1);
-    }
+  // FLEX 无极性概念: 强制直发 (与 SET_CONFIG 一致), 覆盖字段传 NORMAL 也无效
+  if (cfg.encoding == EncodingType::FLEX) {
+    cfg.phase = PhaseType::INVERTED;
+  }
+
+  int result = m_sweeper->start(cfg);
+  if (result == 0) {
+    resp->code = RespCode::OK;
+    const char* modeName = (cfg.mode == Sweeper::ADDR_SWEEP) ? "addr" : "freq";
+    char logLine[128];
+    snprintf(logLine, sizeof(logLine), "SWEEP START mode=%s start=%lu",
+             modeName, (unsigned long)((cfg.mode == Sweeper::ADDR_SWEEP)
+                 ? cfg.addrStart : cfg.freqStartKHz));
+    log(logLine);
+  } else {
+    resp->code   = RespCode::ERR_PARAM;
+    resp->detail = result;
+  }
+}
+
+// ============================================================
+// Handler: SWEEP_STOP
+// ============================================================
+
+void CommandDispatcher::handleSweepStop(const CmdRequest* req, CmdResponse* resp) {
+  resp->cmd = CmdID::CMD_SWEEP_STOP;
+
+  if (m_sweeper && m_sweeper->isRunning()) {
+    Sweeper::Status st = m_sweeper->getStatus();
+    char logLine[64];
+    snprintf(logLine, sizeof(logLine), "SWEEP STOP done=%lu/%lu",
+             (unsigned long)st.done, (unsigned long)st.total);
+    log(logLine);
+    m_sweeper->stop();
+  }
+  resp->code = RespCode::OK;
+}
+
+// ============================================================
+// Handler: SWEEP_STATUS
+// ============================================================
+
+void CommandDispatcher::handleSweepStatus(const CmdRequest* req, CmdResponse* resp) {
+  resp->cmd  = CmdID::CMD_SWEEP_STATUS;
+  resp->code = RespCode::OK;
+
+  if (m_sweeper) {
+    Sweeper::Status st = m_sweeper->getStatus();
+    resp->sweepStatus.running     = st.running;
+    resp->sweepStatus.mode        = st.mode;
+    resp->sweepStatus.current     = st.current;
+    resp->sweepStatus.total       = st.total;
+    resp->sweepStatus.done        = st.done;
+    resp->sweepStatus.batchStart  = st.batchStart;
+    resp->sweepStatus.batchEnd    = st.batchEnd;
+  } else {
+    memset(&resp->sweepStatus, 0, sizeof(resp->sweepStatus));
   }
 }
 
@@ -413,40 +664,40 @@ void api_loop() {
 // 公共调度入口
 // ============================================================
 
-static const char* cmdName(CmdID cmd) {
-  switch (cmd) {
-  case CmdID::CMD_PING:        return "PING";
-  case CmdID::CMD_GET_STATUS:  return "STATUS";
-  case CmdID::CMD_GET_CONFIG:  return "GET_CONFIG";
-  case CmdID::CMD_RESET:       return "RESET";
-  case CmdID::CMD_SET_CONFIG:  return "SET_CONFIG";
-  case CmdID::CMD_TRANSMIT:    return "TX";
-  case CmdID::CMD_ABORT:       return "ABORT";
-  case CmdID::CMD_SET_WIFI:        return "SET_WIFI";
-  case CmdID::CMD_SCAN_WIFI:       return "SCAN_WIFI";
-  case CmdID::CMD_GET_WIFI_STATUS: return "GET_WIFI_STATUS";
-  default: return "UNKNOWN";
-  }
-}
-
-void api_dispatch(const CmdRequest* req, CmdResponse* resp) {
+void CommandDispatcher::dispatch(const CmdRequest* req, CmdResponse* resp) {
   if (!req || !resp) return;
 
   resp->cmd  = req->cmd;
   resp->code = RespCode::ERR_UNKNOWN;
   resp->detail = 0;
 
+  // union 判别校验: 传输层必须声明实际负载, 防跨成员误读 (UB)
+  if (req->payloadType != expectedPayload(req->cmd)) {
+    resp->code = RespCode::ERR_PARAM;
+    resp->detail = -99;
+    char logLine[128];
+    snprintf(logLine, sizeof(logLine), "%s ERR payloadType=%d",
+             cmdName(req->cmd), (int)req->payloadType);
+    log(logLine);
+    return;
+  }
+
   switch (req->cmd) {
-  case CmdID::CMD_PING:         handlePing(req, resp);        break;
-  case CmdID::CMD_GET_STATUS:   handleGetStatus(req, resp);   break;
-  case CmdID::CMD_GET_CONFIG:   handleGetConfig(req, resp);   break;
-  case CmdID::CMD_SET_CONFIG:   handleSetConfig(req, resp);   break;
-  case CmdID::CMD_TRANSMIT:     handleTransmit(req, resp);    break;
-  case CmdID::CMD_ABORT:        handleAbort(req, resp);       break;
-  case CmdID::CMD_RESET:        handleReset(req, resp);       break;
-  case CmdID::CMD_SET_WIFI:       handleSetWiFi(req, resp);       break;
-  case CmdID::CMD_SCAN_WIFI:      handleScanWiFi(req, resp);      break;
-  case CmdID::CMD_GET_WIFI_STATUS:handleGetWifiStatus(req, resp); break;
+  case CmdID::CMD_PING:          handlePing(req, resp);          break;
+  case CmdID::CMD_GET_STATUS:    handleGetStatus(req, resp);     break;
+  case CmdID::CMD_GET_CONFIG:    handleGetConfig(req, resp);     break;
+  case CmdID::CMD_SET_CONFIG:    handleSetConfig(req, resp);     break;
+  case CmdID::CMD_SAVE_CONFIG:   handleSaveConfig(req, resp);    break;
+  case CmdID::CMD_TRANSMIT:      handleTransmit(req, resp);      break;
+  case CmdID::CMD_ABORT:         handleAbort(req, resp);         break;
+  case CmdID::CMD_RESET:         handleReset(req, resp);         break;
+  case CmdID::CMD_SET_WIFI:      handleSetWiFi(req, resp);       break;
+  case CmdID::CMD_SCAN_WIFI:     handleScanWiFi(req, resp);      break;
+  case CmdID::CMD_GET_WIFI_STATUS: handleGetWifiStatus(req, resp); break;
+  case CmdID::CMD_GET_LOG:       handleGetLog(req, resp);        break;
+  case CmdID::CMD_SWEEP_START:   handleSweepStart(req, resp);    break;
+  case CmdID::CMD_SWEEP_STOP:    handleSweepStop(req, resp);     break;
+  case CmdID::CMD_SWEEP_STATUS:  handleSweepStatus(req, resp);   break;
   default: break;
   }
 
@@ -455,34 +706,201 @@ void api_dispatch(const CmdRequest* req, CmdResponse* resp) {
     char logLine[128];
     snprintf(logLine, sizeof(logLine), "%s ERR code=%d detail=%d",
              cmdName(resp->cmd), (int)resp->code, resp->detail);
-    api_log(logLine);
+    log(logLine);
   }
+}
+
+// ============================================================
+// api_sweepStartSimple — Web/串口快捷入口
+// ============================================================
+
+RespCode CommandDispatcher::sweepStartSimple(uint8_t mode, uint32_t* startOut,
+                                             int* detailOut) {
+  CmdRequest req; CmdResponse resp;
+  memset(&req, 0, sizeof(req));
+  req.cmd = CmdID::CMD_SWEEP_START;
+  req.payloadType = PayloadType::SWEEP_START;
+  req.sweepStart.mode = mode;
+  req.sweepStart.encoding   = -1;
+  req.sweepStart.baudRate   = -1;
+  req.sweepStart.phase      = -1;
+  req.sweepStart.tone       = -1;
+  req.sweepStart.msgType    = -1;
+  req.sweepStart.intervalMs = -1;
+  dispatch(&req, &resp);
+
+  if (detailOut) *detailOut = resp.detail;
+  if (startOut && resp.code == RespCode::OK) {
+    TxConfig cfg = getConfig();
+    *startOut = (mode == 0) ? cfg.address : cfg.freqKHz;
+  }
+  return resp.code;
+}
+
+// ============================================================
+// Loop 调度 (由 main.cpp loop 调用)
+// ============================================================
+
+void CommandDispatcher::loop() {
+  // WiFi 后台扫描 (非阻塞: 由主循环执行)
+  if (m_queue.consumeScan() && m_wifi) {
+    m_queue.setScanCache(m_wifi->scanNetworks().c_str());
+    log("wifi scan complete");
+  }
+
+  // WiFi 凭据设置 (非阻塞: 由主循环执行)
+  char ssid[33], pass[65];
+  if (m_queue.consumeWifi(ssid, sizeof(ssid), pass, sizeof(pass)) && m_wifi) {
+    m_wifi->setCredentials(ssid, pass);
+    log("wifi credentials saved");
+  }
+
+  // 待发射的单次 TX (非阻塞: 由主循环执行)
+  char pendingMsg[1024];
+  if (m_queue.consumePendingTx(pendingMsg, sizeof(pendingMsg)) && m_tx) {
+    char savedMsg[1024] = {0};
+    bool msgOverride = (pendingMsg[0] != '\0');
+    if (msgOverride) {
+      strncpy(savedMsg, m_config.message, sizeof(savedMsg) - 1);
+      strncpy(m_config.message, pendingMsg, sizeof(m_config.message) - 1);
+    }
+
+    // 日志: 完整发送参数
+    {
+      const char* encName = (m_config.encoding == EncodingType::POCSAG) ? "POCSAG" : "FLEX";
+      const char* phName  = (m_config.phase == PhaseType::NORMAL) ? "NRM" : "INV";
+      const char* tpName  = (m_config.msgType == MsgType::NUMERIC) ? "NUM" : "ALPHA";
+      char buf[1024];
+      char toneL = "ABCD"[(uint8_t)m_config.tone & 3];
+      snprintf(buf, sizeof(buf),
+               "TX> %s %s %s addr=%lu freq=%ukHz baud=%u pw=%u tone=%c \"%s\"",
+               encName, phName, tpName,
+               (unsigned long)m_config.address,
+               m_config.freqKHz,
+               m_config.baudRate,
+               m_config.txPower,
+               toneL,
+               m_config.message);
+      log(buf);
+    }
+
+    if (m_tx->send(makeTxConfig())) {
+      m_txCount++;
+    } else if (m_tx->lastEncodeError()) {
+      if (msgOverride) {
+        strncpy(m_config.message, savedMsg, sizeof(m_config.message) - 1);
+      }
+      if (m_tx->lastEncodeReason() == Transmitter::EncodeFailReason::MSG_TOO_LONG) {
+        if (m_config.encoding == EncodingType::FLEX)
+          log("TX rejected: message too long (FLEX max 248 chars per frame)");
+        else
+          log("TX rejected: message too long (POCSAG max ~1400 chars)");
+      } else {
+        log("TX dropped (encode failed)");
+      }
+      return;
+    } else {
+      // 队列满 (可能 Sweeper 占用): 恢复消息并重新挂起待发射, 下帧重试
+      if (msgOverride) {
+        strncpy(m_config.message, savedMsg, sizeof(m_config.message) - 1);
+      }
+      m_queue.setPendingTx(pendingMsg[0] ? pendingMsg : nullptr);
+      log("TX deferred (tx queue busy)");
+      return;
+    }
+
+    if (msgOverride) {
+      strncpy(m_config.message, savedMsg, sizeof(m_config.message) - 1);
+    }
+  }
+  // 注: Sweeper 调度由 main.cpp loop() 调用, 不在此处
 }
 
 // ============================================================
 // 初始化
 // ============================================================
 
-void api_init() {
-  // 加载默认配置 (后续可从 NVS 恢复)
-  s_config.encoding  = EncodingType::POCSAG;
-  s_config.phase     = PhaseType::NORMAL;
-  s_config.tone      = ToneType::TONE_D;
-  s_config.msgType   = MsgType::ALPHANUMERIC;
-  s_config.freqKHz   = 152675;
-  s_config.baudRate  = 1200;
-  s_config.address   = 1000;
-  s_config.txPower   = 127;
-  strncpy(s_config.message, "BeeperTX OK", sizeof(s_config.message) - 1);
+void CommandDispatcher::init() {
+  // 从 NVS 恢复配置; 无存档则使用出厂默认
+  m_store.loadOrDefault(m_config);
 
-  // 将默认配置应用到 Si4463 硬件 (频率 + 功率)
-  Si446x_setFrequencyKHz(s_config.freqKHz);
-  Si446x_setTxPower(s_config.txPower);
+  // 将配置应用到 Si4463 硬件 (频率 + 功率)
+  Si446x_setFrequencyKHz(m_config.freqKHz);
+  Si446x_setTxPower(m_config.txPower);
 
-  s_pendingTx = false;
-  s_pendingScan = false;
-  s_pendingWifiSet = false;
-  s_pendingTxMsg[0] = '\0';
-  s_txCount = 0;
-  s_scanCache = "[]";
+  m_txCount = 0;
+  m_queue.clear();
 }
+
+// ============================================================
+// 全局调度器实例 (唯一状态持有者)
+// ============================================================
+
+CommandDispatcher g_dispatcher;
+
+} // namespace
+
+// ============================================================
+// C 接口薄封装 (保持 ABI, 调用方零改动)
+// ============================================================
+
+extern "C" {
+
+void api_init() {
+  g_dispatcher.init();
+}
+
+void api_dispatch(const CmdRequest* req, CmdResponse* resp) {
+  g_dispatcher.dispatch(req, resp);
+}
+
+void api_setTransmitter(Transmitter* tx) {
+  g_dispatcher.setTransmitter(tx);
+}
+
+void api_setWiFiManager(WiFiManager* wifi) {
+  g_dispatcher.setWiFiManager(wifi);
+}
+
+void api_setSweeper(Sweeper* sweeper) {
+  g_dispatcher.setSweeper(sweeper);
+}
+
+void api_setRadioReady(bool ready) {
+  g_dispatcher.setRadioReady(ready);
+}
+
+RespCode api_sweepStartSimple(uint8_t mode, uint32_t* startOut, int* detailOut) {
+  return g_dispatcher.sweepStartSimple(mode, startOut, detailOut);
+}
+
+TxConfig api_getConfig() {
+  return g_dispatcher.getConfig();
+}
+
+void api_getLog(char* buf, size_t size) {
+  g_dispatcher.getLog(buf, size);
+}
+
+void api_getLogAfter(char* buf, size_t size, uint32_t after,
+                     uint32_t* seqOut, bool* wrappedOut) {
+  g_dispatcher.getLogAfter(buf, size, after, seqOut, wrappedOut);
+}
+
+void api_log(const char* line) {
+  g_dispatcher.log(line);
+}
+
+void api_loop() {
+  g_dispatcher.loop();
+}
+
+void api_triggerScan() {
+  g_dispatcher.triggerScan();
+}
+
+void api_getScanCache(char* buf, size_t size) {
+  g_dispatcher.getScanCache(buf, size);
+}
+
+} // extern "C"

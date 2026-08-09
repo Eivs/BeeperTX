@@ -28,7 +28,7 @@
     <!-- ====== 主体: 配置面板 + 终端视图 ====== -->
     <main class="main-content">
       <!-- 左侧配置面板 -->
-      <aside id="config-panel">
+      <aside id="config-panel" class="custom-scroll">
         <!-- 协议选择 -->
         <fieldset class="cfg-group" id="group-encoding">
           <legend>Protocol</legend>
@@ -49,13 +49,22 @@
 
         <!-- 铃音 -->
         <fieldset class="cfg-group" id="group-tone">
-          <legend>Tone (POCSAG func)</legend>
+          <legend>Tone</legend>
           <div class="btn-group" data-field="tone">
             <button class="btn btn-sm" data-value="A">A</button>
             <button class="btn btn-sm" data-value="B">B</button>
             <button class="btn btn-sm" data-value="C">C</button>
             <button class="btn btn-sm" data-value="D">D</button>
           </div>
+        </fieldset>
+
+        <!-- FLEX Mail Drop (仅 FLEX 显示, 与 Phase/Tone 一致) -->
+        <fieldset class="cfg-group" id="group-maildrop" style="display:none;">
+          <legend>Mail Drop</legend>
+          <label class="form-check">
+            <input type="checkbox" id="inp-mail-drop">
+            <span>Set Mail Drop flag</span>
+          </label>
         </fieldset>
 
         <!-- 消息类型 -->
@@ -67,24 +76,20 @@
           </div>
         </fieldset>
 
-        <!-- 频率 -->
+        <!-- 频率 (UI 显示 MHz, 后端存储 kHz) -->
         <fieldset class="cfg-group">
-          <legend>Frequency (kHz)</legend>
+          <legend>Frequency (MHz)</legend>
           <div class="form-group">
-            <input type="number" id="inp-freq" placeholder="152675" min="119000" max="1050000" step="1">
+            <input type="number" id="inp-freq" placeholder="152.675" min="119" max="1050" step="0.001">
           </div>
         </fieldset>
 
-        <!-- 码率 -->
+        <!-- 码率 (选项随编码切换: POCSAG 512/1200, FLEX 1600/2400/3200) -->
         <fieldset class="cfg-group" id="group-baud">
           <legend>Baud Rate</legend>
           <div class="btn-group" data-field="baudRate">
             <button class="btn btn-sm" data-value="512">512</button>
             <button class="btn btn-sm" data-value="1200">1200</button>
-            <button class="btn btn-sm" data-value="1600">1600</button>
-            <button class="btn btn-sm" data-value="2400">2400</button>
-            <button class="btn btn-sm" data-value="3200">3200</button>
-            <button class="btn btn-sm" data-value="6400">6400</button>
           </div>
         </fieldset>
 
@@ -100,7 +105,22 @@
         <fieldset class="cfg-group">
           <legend>Address / CAPCODE</legend>
           <div class="form-group">
-            <input type="number" id="inp-addr" placeholder="1000" min="0" max="2147483647" step="1">
+            <input type="number" id="inp-addr" placeholder="1000" min="1" max="2147483647" step="1">
+          </div>
+        </fieldset>
+
+        <!-- 追码/追频 扫描 -->
+        <fieldset class="cfg-group" id="group-sweep">
+          <legend>Sweep</legend>
+          <div class="btn-group" style="margin-bottom:4px;">
+            <button id="btn-sweep-addr" class="btn btn-sm active" data-value="addr">Addr</button>
+            <button id="btn-sweep-freq" class="btn btn-sm" data-value="freq">Freq</button>
+          </div>
+          <button id="btn-sweep-toggle" class="btn btn-sm btn-primary" style="width:100%;margin-bottom:4px;">START</button>
+          <div id="sweep-status-line" class="sweep-status" style="display:none;">
+            <span id="sweep-mode-text">--</span>
+            <span class="sep">|</span>
+            <span id="sweep-current-text">--</span>
           </div>
         </fieldset>
 
@@ -109,10 +129,9 @@
           <legend>Presets</legend>
           <div class="btn-group" style="margin-top:8px;">
             <button id="btn-preset-save" class="btn btn-ghost btn-sm">Save</button>
-            <button id="btn-preset-load" class="btn btn-ghost btn-sm">Load</button>
             <button id="btn-preset-del" class="btn btn-ghost btn-sm" style="color:#e74c3c">Del</button>
           </div>
-          <select id="sel-preset" class="form-control" style="margin-top:4px;width:100%;">
+          <select id="sel-preset" class="form-control" style="margin-top:4px;width:100%;" title="Load on select">
             <option value="">-- saved presets --</option>
           </select>
         </fieldset>
@@ -131,7 +150,7 @@
           <div class="line info">BeeperTX ready. Type a message and press Send.</div>
         </div>
         <div class="send-area">
-          <input type="text" id="inp-message" placeholder="Input message..." maxlength="255" autofocus>
+          <input type="text" id="inp-message" placeholder="Input message..." maxlength="1023" autofocus>
           <button id="btn-send" class="btn btn-primary">Send</button>
           <button id="btn-clear-msg" class="btn btn-ghost btn-sm">Clear</button>
         </div>

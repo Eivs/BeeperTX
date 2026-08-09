@@ -2,100 +2,150 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "ProtocolTypes.h"
+#include "Pocsag.h"
+#include "FlexEncoder.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
 
 /**
  * @brief 统一发射控制器 — 支持 POCSAG / FLEX 两种编码。
  *
  * 封装 Direct TX Mode (GPIO0 bit-banging) 的公共流程:
  *   启动 Direct TX → 发送前导码/数据 → 停止 TX
- * 码率、相位等由 Config 结构体统一配置。
+ *
+ * 架构: send() 在 core 0 预编码, 通过队列提交到 core 1 的 txTask 异步发射。
+ * POCSAG 和 FLEX 均先编码再提交 RAW Job, 编码位置对称。
  *
  * 使用方式:
  * @code
  *   Transmitter tx(PIN_TX_DATA);
  *   Transmitter::Config cfg;
- *   cfg.encoding = Transmitter::POCSAG;
- *   cfg.baudRate = 1200;
- *   cfg.address  = 1000;
+ *   cfg.encoding = EncodingType::FLEX;
+ *   cfg.baudRate = 1600;
+ *   cfg.address  = 37137;
  *   cfg.message  = "你好 FLEX";
  *   tx.send(cfg);
  * @endcode
  */
 class Transmitter {
 public:
-  /** 编码方式 */
-  enum Encoding {
-    POCSAG = 0,  //!< POCSAG 协议 (支持中文 GB2312)
-    FLEX   = 1   //!< FLEX 协议 (ASCII only)
-  };
-
-  /** 相位 (FSK 极性) */
-  enum Phase {
-    NORMAL   = 0, //!< 正相
-    INVERTED = 1  //!< 反相
-  };
-
-  /** 铃音 (POCSAG function bits) */
-  enum Tone {
-    TONE_A = 0,
-    TONE_B = 1,
-    TONE_C = 2,
-    TONE_D = 3
-  };
-
-  /** 消息类型 */
-  enum MsgType {
-    NUMERIC      = 0, //!< 数字 (POCSAG: 4-bit BCD)
-    ALPHANUMERIC = 1  //!< 汉字/字母 (POCSAG: GB2312, FLEX: ASCII)
-  };
-
-  /**
-   * @brief 发射配置 (仅数据容器, 不含逻辑)
-   *
-   * main.cpp 只填充此结构体, 然后调用 send().
-   */
   struct Config {
-    Encoding   encoding   = POCSAG;          //!< POCSAG / FLEX
-    Phase      phase      = NORMAL;           //!< 正相 / 反相 (根据射频配置和寻呼机适配情况选择)
-    int        baudRate   = 1200;             //!< 码率: 512/1200/1600/2400/3200/6400
-    Tone       tone       = TONE_A;           //!< 铃音
-    uint64_t   address    = 1000;             //!< 寻呼机地址
-    char       message[256] = "";             //!< 消息内容 (UTF-8, 最大 255 字节)
-    MsgType    msgType    = ALPHANUMERIC;//!< 数字 / 汉字
+    EncodingType encoding   = EncodingType::POCSAG;
+    PhaseType    phase      = PhaseType::NORMAL;
+    int          baudRate   = 1200;
+    ToneType     tone       = ToneType::TONE_A;
+    uint64_t     address    = 1000;
+    char         message[1024] = "";
+    MsgType      msgType    = MsgType::ALPHANUMERIC;
+    bool         mailDrop   = false;  //!< FLEX Mail Drop 标志 (仅 ALPHA 生效)
   };
 
-  /**
-   * @param txPin 连接到 Si4463 GPIO0 的 ESP32 GPIO 编号
-   */
   explicit Transmitter(int txPin);
 
   /**
-   * @brief 发射一条消息 (自动选择编码器并调度 Direct TX)
+   * @brief 发射一条消息 (预编码后异步入队, txTask 执行位敲击)。
+   * @return true=已入队, false=队列满/编码失败
    */
-  void send(const Config& cfg);
+  bool send(const Config& cfg);
+
+  /**
+   * @brief 直接发送已编码的 POCSAG 基带码字数组 (已含前导码)。
+   *        供 Sweeper 批量追码使用 (encodeBatchMulti 输出)。
+   */
+  bool sendPocsagRaw(const unsigned long* baseband, int wordCount, int baudRate);
+
+  /**
+   * @brief 直接发送已编码的 FLEX 字节数组。
+   *        供 Sweeper 追码 / send() 预编码路径使用。
+   */
+  bool sendFlexRaw(const uint8_t* data, size_t len, int baudRate, bool invert);
+
+  /** 发射通道是否忙 */
+  bool isBusy() const;
+
+  /** 中断当前发射: 清空队列 + 设 abort 标志 */
+  void abortTx();
+
+  /** 清除中断标志 */
+  void clearAbort() { m_abort = false; }
+
+  /**
+   * @brief 编码失败原因 (区分不可重试错误)
+   */
+  enum class EncodeFailReason : uint8_t {
+    NONE        = 0,  //!< 无错误
+    INVALID_ADDR = 1, //!< 非法地址 (如 capcode 0)
+    MSG_TOO_LONG = 2, //!< 消息超长 (超出协议单帧/单次容量)
+    OTHER        = 3, //!< 其他编码错误
+  };
+
+  /**
+   * @brief 上次 send() 是否因编码失败返回 false (区别于队列满)。
+   */
+  bool lastEncodeError() const { return m_lastEncodeReason != EncodeFailReason::NONE; }
+
+  /**
+   * @brief 上次编码失败的具体原因。
+   */
+  EncodeFailReason lastEncodeReason() const { return m_lastEncodeReason; }
 
   // ---- 静态工具 ----
-
-  /** 码率 → 位时间 (µs) */
   static int bitTimeUs(int baudRate);
-
-  /** POCSAG 前导码长度 (bit) */
   static int preambleBits(int baudRate);
 
 private:
   int  m_txPin;
-  int  m_txCount = 0;   //!< 发射序号 (仅用于日志)
+  int  m_txCount = 0;
 
-  // ---- Direct TX 流程 ----
+  // FLEX 中英混排控制字符缓冲 (实例成员, 非 static)
+  uint8_t m_flexMixed[1024];
+
+  // POCSAG 单次发送预编码器 (实例成员, 避免 ~6KB 栈分配)
+  PocsagEncoder m_pocsagEncoder;
+
+  // FLEX 单次发送预编码器 (实例成员, 避免 ~2KB 栈分配)
+  FlexEncoder m_flexEncoder;
+
+  // ---- 后台发射任务 (core 1) ----
+  enum class JobType : uint8_t {
+    RAW_POCSAG = 0,  //!< 预编码 POCSAG (单次 + Sweeper 批量)
+    RAW_FLEX   = 1,  //!< 预编码 FLEX  (单次 + Sweeper 批量)
+  };
+
+  static const int JOB_MAX_POCSAG_WORDS = 1024;
+  static const int JOB_MAX_FLEX_BYTES   = 2048;
+
+  struct Job {
+    JobType type;
+    int     baudRate;
+    bool    invert;
+    Job() : type(JobType::RAW_POCSAG), baudRate(0), invert(false) {}
+    union {
+      struct { unsigned long words[JOB_MAX_POCSAG_WORDS]; int wordCount; } pocsag;
+      struct { uint8_t  data[JOB_MAX_FLEX_BYTES]; size_t len; } flex;
+    };
+  };
+  QueueHandle_t m_queue = nullptr;
+  TaskHandle_t  m_task  = nullptr;
+  volatile bool m_txActive = false;
+  volatile bool m_abort    = false;
+  EncodeFailReason m_lastEncodeReason = EncodeFailReason::NONE; //!< 最近一次 send() 编码失败原因
+
+  bool ensureTask();
+  static void txTaskEntry(void* arg);
+  void txTaskMain();
+  bool enqueue(Job& job);
+  void feedWatchdog();
+
+  void sendPocsagRawImpl(const unsigned long* baseband, int wordCount, int baudRate);
+  void sendFlexRawImpl(const uint8_t* data, size_t len, int baudRate, bool invert);
+
   void enterTx();
   void exitTx();
 
-  // ---- 低层位流发送 ----
-  void sendPreambleBits(int bits, int bitTimeUs, bool invert);
   void sendCodewords(const unsigned long* cw, int count, int bitTimeUs);
-  void sendBytes(const uint8_t* data, size_t len, int bitTimeUs);
-
-  // ---- 协议调度 ----
-  void sendPocsag(const Config& cfg);
-  void sendFlex(const Config& cfg);
+  void sendBytes(const uint8_t* data, size_t len, int bitTimeUs, bool invert = false);
 };

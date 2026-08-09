@@ -35,36 +35,13 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <cstring>
+#include "ProtocolTypes.h"
 
 // ============================================================
-// 公共枚举 (与 Transmitter 对齐)
+// 公共枚举 — 统一来自 ProtocolTypes.h (EncodingType/PhaseType/
+// ToneType/MsgType), 与 Transmitter::Config / Sweeper::Config 同源,
+// 消除三套枚举互相强转的问题。
 // ============================================================
-
-/** 编码协议 */
-enum class EncodingType : uint8_t {
-  POCSAG = 0,
-  FLEX   = 1
-};
-
-/** 相位 (FSK 极性) */
-enum class PhaseType : uint8_t {
-  NORMAL   = 0,
-  INVERTED = 1
-};
-
-/** POCSAG 铃音 / 功能码 */
-enum class ToneType : uint8_t {
-  TONE_A = 0,
-  TONE_B = 1,
-  TONE_C = 2,
-  TONE_D = 3
-};
-
-/** 消息类型 */
-enum class MsgType : uint8_t {
-  NUMERIC      = 0,
-  ALPHANUMERIC = 1
-};
 
 // ============================================================
 // 命令 ID 枚举
@@ -92,6 +69,11 @@ enum class CmdID : uint8_t {
 
   // ---- 查询 (0x30–0x3F) ----
   CMD_GET_LOG     = 0x30,   //!< 读取最近发射日志
+
+  // ---- 扫描 (0x50–0x5F) ----
+  CMD_SWEEP_START  = 0x50,  //!< 启动追码/追频
+  CMD_SWEEP_STOP   = 0x51,  //!< 停止扫描
+  CMD_SWEEP_STATUS = 0x52,  //!< 查询扫描状态
 };
 
 // ============================================================
@@ -104,10 +86,11 @@ struct TxConfig {
   ToneType     tone      = ToneType::TONE_A;
   MsgType      msgType   = MsgType::ALPHANUMERIC;
   uint32_t     freqKHz   = 153950;       // 频率 (kHz), 范围 119000–1050000
-  uint16_t     baudRate  = 1200;         // 码率: 512/1200/1600/2400/3200/6400
-  uint32_t     address   = 1000;         // POCSAG: 0–2097151, FLEX: CAPCODE
+  uint16_t     baudRate  = 1200;         // 码率: POCSAG 512/1200, FLEX 1600/2400/3200
+  uint32_t     address   = 1000;         // POCSAG: 1–2097151, FLEX: CAPCODE
   uint8_t      txPower   = 127;          // PA 功率 0–127 (127=+20dBm)
-  char         message[256];             // UTF-8 消息, 最大 255 字节
+  bool         mailDrop  = false;        // FLEX Mail Drop 标志 (仅 ALPHA 生效)
+  char         message[1024];            // UTF-8 消息, 最大 1023 字节
 };
 
 // ============================================================
@@ -116,9 +99,9 @@ struct TxConfig {
 
 struct DeviceStatus {
   uint16_t partId;        // Si4463 型号 (0x4463)
-  uint8_t  romId;         // ROM 版本 (3=B1, 6=C2)
+  uint8_t  romId;         // ROM 版本 (3=B1B, 6=C2A)
   uint8_t  chipRev;       // 芯片修订版本
-  uint8_t  state;         // Si4463 状态机 (READY=3, TX=5, etc.)
+  uint8_t  state;         // Si4463 状态机 (READY=3, TX=7, etc.)
   uint32_t freqKHz;       // 当前锁定频率 (kHz)
   uint8_t  txPower;       // 当前 PA 功率
   int16_t  rssiDbm;       // 当前 RSSI (dBm)
@@ -136,7 +119,29 @@ struct WiFiStatus {
   char     ssid[33];      // 当前连接 SSID
   char     ip[16];        // IP 地址字符串
   int8_t   rssi;          // WiFi 信号强度 (dBm), -1 = N/A
-  char     scanResult[4096];// WiFi 扫描结果 (JSON), CMD_SCAN_WIFI 时填充
+  // 注: 扫描结果 (JSON) 不再放进 union — 体积大 (4KB) 且会撑爆任务栈。
+  //     由 api_getScanCache() 独立提供, 传输层 (Web/串口) 直接引用。
+};
+
+// ============================================================
+// 负载判别 (防联合体误读)
+// ============================================================
+
+/**
+ * @brief CmdRequest 联合体实际负载类型。
+ *
+ * 传输层在填充 union 后必须同步设置 payloadType, 调度器在处理前校验,
+ * 防止 "传输层填了 A 成员、处理器却读 B 成员" 的未定义行为。
+ * NONE = 无参数命令 (PING/GET_STATUS/GET_CONFIG/RESET/ABORT/SCAN_WIFI/
+ *        GET_WIFI_STATUS/SWEEP_STOP/SWEEP_STATUS)。
+ */
+enum class PayloadType : uint8_t {
+  NONE         = 0,
+  SET_CONFIG   = 1,   //!< union.setConfig
+  TRANSMIT_MSG = 2,   //!< union.transmitMsg
+  WIFI_CRED    = 3,   //!< union.wifiCred
+  LOG_COUNT    = 4,   //!< union.logCount
+  SWEEP_START  = 5,   //!< union.sweepStart
 };
 
 // ============================================================
@@ -144,7 +149,8 @@ struct WiFiStatus {
 // ============================================================
 
 struct CmdRequest {
-  CmdID cmd;               // 命令 ID (必填)
+  CmdID       cmd;         // 命令 ID (必填)
+  PayloadType payloadType; // 联合体实际负载 (传输层填写, 调度器校验)
 
   union {
     // CMD_SET_CONFIG:       完整发射配置
@@ -152,7 +158,7 @@ struct CmdRequest {
 
     // CMD_TRANSMIT:         若 message[0] != '\0' 则覆盖当前消息
     //                      否则发射已配置的消息
-    char transmitMsg[256];
+    char transmitMsg[1024];
 
     // CMD_SET_WIFI:         WiFi 凭据
     struct {
@@ -163,8 +169,19 @@ struct CmdRequest {
     // CMD_GET_LOG:          读取最近 N 条日志
     uint8_t logCount;
 
+    // CMD_SWEEP_START:      启动追码/追频 (mode 必填, 其余覆盖字段 -1=未指定)
+    struct {
+      uint8_t mode;          // 0=追地址码, 1=追频率
+      int16_t encoding;      // -1=未指定(用当前), 0=POCSAG, 1=FLEX
+      int16_t baudRate;      // -1=未指定(用当前)
+      int16_t phase;         // -1=未指定(用当前), 0=NORMAL, 1=INVERTED
+      int16_t tone;          // -1=未指定(用当前), 0-3
+      int16_t msgType;       // -1=未指定(用当前), 0=NUMERIC, 1=ALPHANUMERIC
+      int32_t intervalMs;    // -1=未指定(用默认 500)
+    } sweepStart;
+
     // CMD_PING / CMD_GET_STATUS / CMD_GET_CONFIG /
-    // CMD_ABORT / CMD_SCAN_WIFI:
+    // CMD_ABORT / CMD_SCAN_WIFI / CMD_SWEEP_STOP / CMD_SWEEP_STATUS:
     //   无额外参数
   };
 
@@ -200,6 +217,17 @@ struct CmdResponse {
 
     // CMD_SCAN_WIFI / CMD_SET_WIFI
     WiFiStatus wifi;
+
+    // CMD_SWEEP_STATUS
+    struct {
+      bool     running;
+      uint8_t  mode;       // 0=idle, 1=追地址, 2=追频率
+      uint32_t current;    // 当前地址/频率 (下一批起点)
+      uint32_t total;      // 总步数
+      uint32_t done;       // 已完成步数
+      uint32_t batchStart; // 当前批次起始 (追码批量; 否则 = current)
+      uint32_t batchEnd;   // 当前批次结束 (含; 否则 = current)
+    } sweepStatus;
   };
 
   CmdResponse() { memset(this, 0, sizeof(*this)); }
@@ -212,6 +240,7 @@ struct CmdResponse {
 // 前向声明
 class Transmitter;
 class WiFiManager;
+class Sweeper;
 
 #ifdef __cplusplus
 extern "C" {
@@ -238,6 +267,26 @@ void api_setTransmitter(Transmitter* tx);
 void api_setWiFiManager(WiFiManager* wifi);
 
 /**
+ * @brief 注入 Sweeper 指针 (由 main.cpp 在创建 sweeper 后调用)。
+ */
+void api_setSweeper(Sweeper* sweeper);
+
+/**
+ * @brief 设置射频 (Si4463) 可用状态 — main.cpp 初始化失败时置 false,
+ *        后台重试成功后置 true。离线期间 TX/SWEEP 命令返回 ERR_HW。
+ */
+void api_setRadioReady(bool ready);
+
+/**
+ * @brief Web/串口快捷入口: 从当前 TxConfig 填充扫描配置并启动。
+ * @param mode     0=追码, 1=追频
+ * @param startOut 可选: 实际起始值 (addrStart / freqStartKHz)
+ * @param detailOut 可选: 失败时的 detail 码 (ERR_BUSY/ERR_PARAM/ERR_HW 细分)
+ * @return RespCode (OK=成功, ERR_BUSY/ERR_PARAM/ERR_HW=失败)
+ */
+RespCode api_sweepStartSimple(uint8_t mode, uint32_t* startOut, int* detailOut);
+
+/**
  * @brief 获取当前发射配置的快照 (用于 Web/串口日志)。
  */
 TxConfig api_getConfig();
@@ -248,6 +297,19 @@ TxConfig api_getConfig();
  * @param size 缓冲区大小
  */
 void api_getLog(char* buf, size_t size);
+
+/**
+ * @brief 增量获取日志: 返回写序号 > after 的行 (换行分隔)。
+ *        客户端记录上次返回的 seqOut, 下轮传入 after, 只拉新行;
+ *        wrappedOut=true 表示客户端序号已滚出环形窗口, 需全量重绘。
+ * @param buf        输出缓冲区
+ * @param size       缓冲区大小 (含结尾 '\0')
+ * @param after      客户端已持有的最大写序号 (0 = 全量)
+ * @param seqOut     可选: 最新写序号
+ * @param wrappedOut 可选: 环形覆盖导致行丢失
+ */
+void api_getLogAfter(char* buf, size_t size, uint32_t after,
+                     uint32_t* seqOut, bool* wrappedOut);
 
 /**
  * @brief 向日志缓冲区追加一行。
@@ -266,10 +328,12 @@ void api_loop();
 void api_triggerScan();
 
 /**
- * @brief 获取缓存的 WiFi 扫描结果 (JSON 数组字符串)。
- *        直接返回内部缓存引用, 无长度限制。
+ * @brief 拷贝缓存的 WiFi 扫描结果 (JSON 数组字符串) 到调用方缓冲。
+ * @param buf  输出缓冲区
+ * @param size 缓冲区大小 (含结尾 '\0'); 结果截断到 size-1
+ * 线程安全: 内部临界区读取, 不返回内部指针 (防并发重分配 use-after-free)。
  */
-const char* api_getScanCache();
+void api_getScanCache(char* buf, size_t size);
 
 #ifdef __cplusplus
 }

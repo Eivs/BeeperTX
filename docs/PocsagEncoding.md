@@ -114,16 +114,15 @@ genSignal(addr, func, msg, len, mode, invert)
 - 每 5 个 nibble (20 bit) 生成一个消息码字
 - 尾部用 SPACE (`0xA`) 填充至 20-bit 边界
 
-### 七、物理层发射时序 [[src/Controller/Transmitter.cpp:119-156]]
+### 七、物理层发射时序 [[src/Controller/Transmitter.cpp]]
 
 ```
-enterTx() → Si446x_startDirectTX(0, 1) + 10ms PLL 锁定
-sendPreambleBits(576, bitTime, invert)   — 逐位 busy-wait GPIO0
-sendCodewords(bb, bandLen, bitTime)      — MSB-first, 32-bit/word
+enterTx() → Si446x_startDirectTX(0, 1) + 2ms PLL 锁定
+sendCodewords(bb, bandLen, bitTime)      — MSB-first, 32-bit/word (含 576-bit 前导码)
 exitTx() → Si446x_stopTX()
 ```
 
-波特率对应位时间 [[src/Controller/Transmitter.cpp:24-36]]：
+波特率对应位时间 [[src/Controller/Transmitter.cpp]]：
 
 | 波特率 | 位时间 |
 |--------|--------|
