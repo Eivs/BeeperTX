@@ -11,6 +11,29 @@
 
 ![Web 控制面板](images/webui.png)
 
+## 功能特性
+
+- **双协议寻呼编码**: POCSAG（512 / 1200 bps）与 FLEX（1600 / 2400 / 3200 bps），
+  发射时按配置自动路由到对应编码器，支持数字、字母与中文消息
+- **中英文混排**: UTF-8 消息自动转 GB2312，借助 `\x0E`(SO) / `\x0F`(SI) 控制字符
+  在中英文模式间切换，一条消息内中英文任意混排
+- **宽频覆盖**: 119–1050 MHz，6 个频段自动选择（OUTDIV / CLKGEN_BAND），
+  频率、功率、码率均可动态配置，无需重新编译
+- **直接调制 (Direct TX)**: GPIO0 bit-bang 直接 FSK 调制（非 FIFO），
+  由独立 txTask 独占 Core 1 发射，时序精确
+- **异步发射架构**: Core 0 预编码 → FreeRTOS 队列 → txTask（Core 1）位敲击，
+  不阻塞 AsyncWebServer 事件循环，发射期间 Web/串口保持响应
+- **追码 / 追频 (Sweeper)**: 地址扫描（POCSAG 单前导码批量、FLEX 一次 ERS 多帧）
+  与频率扫描，非阻塞状态机，WebUI / 串口 / REST API 均可控制
+- **批量编码加速**: POCSAG 单前导码跨 SYNC 连续多 Batch；FLEX 一次 ERS 连续多帧、
+  帧内多地址多消息（约 23x 提速）
+- **三种交互方式**: Web 控制面板（SPA）、串口命令行、WiFi 配网，
+  所有接口共享同一套 API 命令集
+- **配置持久化**: `SAVE` 将发射配置写入 NVS（magic+version 校验），重启自动恢复
+- **发射日志**: 环形缓冲实时记录，Web / 串口均可查询
+- **FLEX Mail Drop**: 可选置位 Mail Drop 标志（WebUI 勾选）
+- **预设管理**: WebUI 使用 LocalStorage 保存 / 加载发射配置预设
+
 ## 硬件连接
 
 ### 引脚映射
