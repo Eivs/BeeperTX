@@ -846,15 +846,6 @@ pio device monitor -b 115200               # 串口监视器 (115200 bps)
 |------|------|
 | `luatos-esp32s3` (默认) | ESP32-S3, 16MB Flash, PSRAM, LittleFS |
 
-## 致谢与引用
-
-本项目基于以下开源项目构建，感谢原作者们的杰出工作：
-
-| 项目 | 用途 | 许可 |
-|------|------|------|
-| [Theldus/tinyflex](https://github.com/Theldus/tinyflex) | FLEX 编码库 (`lib/Flex/flex.h`, 单头文件 C 实现) | 公有领域 (Public Domain) |
-| [ZakKemble/Si446x](https://github.com/ZakKemble/Si446x) | Si4463 射频驱动 (`lib/si4463/`, 已适配 ESP32-S3 与跨核 SPI 互斥) | GNU GPL v3 |
-
 ## 测试与验证工具
 
 `tools/` 目录包含独立验证脚本（不参与固件编译），用于回归校验编码器、状态机与 UI：
@@ -917,3 +908,12 @@ BeeperTX started
 7. **预编码+异步发射**: `Transmitter::send()` 在调用方上下文 (core 0 / api_loop) 中完成 GB2312 转码和协议编码，
    编码后的 RAW 数据通过 FreeRTOS 队列提交到 txTask (core 1) 异步发射，
    避免阻塞 AsyncWebServer 的事件循环。
+
+## 致谢与引用
+
+本项目基于以下开源项目构建，感谢原作者们的杰出工作：
+
+| 项目 | 用途 | 许可 |
+|------|------|------|
+| [Theldus/tinyflex](https://github.com/Theldus/tinyflex) | FLEX 编码库 (`lib/Flex/flex.h`, 单头文件 C 实现) | 公有领域 (Public Domain) |
+| [ZakKemble/Si446x](https://github.com/ZakKemble/Si446x) | Si4463 射频驱动 (`lib/si4463/`, 已适配 ESP32-S3 与跨核 SPI 互斥) | GNU GPL v3 |
