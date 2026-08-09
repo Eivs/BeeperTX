@@ -37,25 +37,28 @@
 main.cpp (配置宏: TX_ADDR, TX_MSG, TX_ENCODING, ...)
   │
   ▼
-Transmitter::send(Config)
+Transmitter::send(Config)                  ← core 0: 预编码
   │
-  ├─[POCSAG]──► Transmitter::sendPocsag()
-  │               │
-  │               ├─ GB.get(msg)         → UTF-8 → GB2312
-  │               ├─ PocsagEncoder::encode()  → 基带码字数组
-  │               ├─ enterTx()           → Si446x_startDirectTX()
-  │               ├─ sendPreambleBits()  → 576-bit 前导码 (GPIO0)
-  │               ├─ sendCodewords()     → 32-bit 码字序列 (GPIO0)
-  │               └─ exitTx()            → Si446x_stopTX()
+  ├─[POCSAG]──► GB.get(msg)               → UTF-8 → GB2312
+  │             PocsagEncoder::encode()    → 基带码字数组 (含 576-bit 前导码)
+  │             sendPocsagRaw(bb, len)     → 深拷贝入队
   │
-  └─[FLEX]─────► Transmitter::sendFlex()
-                  │
-                  ├─ GB.get(msg)         → UTF-8 → GB2312
-                  ├─ 控制字符注入         → \x0E/\x0F 切中英文
-                  ├─ FlexEncoder::encode() → FLEX 帧字节数组
-                  ├─ enterTx()           → Si446x_startDirectTX()
-                  ├─ sendBytes()         → 字节数组 (GPIO0)
-                  └─ exitTx()            → Si446x_stopTX()
+  └─[FLEX]────► GB.get(msg)               → UTF-8 → GB2312
+                控制字符注入               → \x0E/\x0F 切中英文
+                FlexEncoder::encode()      → FLEX 帧字节数组 (含 ERS+同步)
+                sendFlexRaw(data, len)     → 深拷贝入队
+  │
+  ▼  FreeRTOS 队列 (深度 3)
+  │
+  ▼
+txTask (core 1, prio 3)                   ← core 1: 位敲击
+  │
+  ├─ sendPocsagRawImpl(bb, len)  ─┐
+  └─ sendFlexRawImpl(data, len)  ─┤
+                                   │
+                   enterTx()       → Si446x_startDirectTX()
+                   sendCodewords() / sendBytes()
+                   exitTx()        → Si446x_stopTX()
 ```
 
 关键常量:
@@ -351,10 +354,9 @@ byte-by-byte:
      ... 直至消息码字全部发送
      [16 × IDLE]
 
-4. 发射:
-   enterTx() → Si4463 进入 Direct TX, PLL 锁定 10ms
-   sendPreambleBits(576, 833, false) → GPIO0 交替 HIGH/LOW
-   sendCodewords(baseband, bandLen, 833) → MSB-first bit-bang
+4. 发射 (txTask, core 1):
+   enterTx() → Si4463 进入 Direct TX, PLL 锁定 2ms
+   sendCodewords(baseband, bandLen, 833) → MSB-first bit-bang (含 576-bit 前导码)
    exitTx() → 停止 TX
 ```
 
@@ -561,7 +563,7 @@ dst[i] = (src[0].bit[31-i] << 7) |
    输出: [0xBC,0xF2, 0xCC,0xE5, 0xD6,0xD0, 0xCE,0xC4,
           0x20, 0x41, 0x43, 0x42, 0x20, 0x31, 0x32, 0x33]
 
-2. 控制字符注入 (Transmitter::sendFlex):
+2. 控制字符注入 (Transmitter::send):
 
    inChinese=true (默认中文)
    0xBC (≥0x80, inChinese=true) → 直接写入
@@ -675,7 +677,7 @@ for each byte:
 insert EOT at end
 ```
 
-**FLEX 路径** (在 `Transmitter::sendFlex()` 内):
+**FLEX 路径** (在 `Transmitter::send()` 内):
 
 ```cpp
 bool inChinese = true;  // 寻呼机默认中文模式

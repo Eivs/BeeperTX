@@ -16,6 +16,13 @@
 
 // USER DEFINED PARAMETERS
 // Define your own parameters here
+//
+// 符号率 (sps) — 驱动用它推导 Direct TX 位敲击码率
+// (2FSK 下 1 symbol = 1 bit)。必须与 WDS 的 Rsymb 一致:
+//   512 sps → 1953 µs/bit, 1200 sps → 833 µs/bit, 1600 sps → 625 µs/bit
+// 更换 radio_config.h (换硬件版本/码率) 时若此处未定义,
+// 驱动会回退到 1200 sps 并给出编译警告。
+#define RADIO_CONFIGURATION_DATA_RSYMB_SPS                     1200
 
 // INPUT DATA
 /*

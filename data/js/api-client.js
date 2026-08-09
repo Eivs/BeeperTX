@@ -64,8 +64,26 @@
      */
     wifiSet(ssid, password) { return _fetch('POST', '/api/wifi', { ssid, password }); },
 
-    /** GET /api/log */
-    getLog()      { return _fetch('GET', '/api/log'); }
+    /** GET /api/log — 全量日志 (首次拉取) */
+    getLog()      { return _fetch('GET', '/api/log'); },
+
+    /**
+     * GET /api/log?after=<seq> — 增量拉取: 只返回写序号 > seq 的新行。
+     * 响应 { seq, wrapped, lines[] }; wrapped=true 时需全量重绘。
+     */
+    getLogAfter(seq) { return _fetch('GET', '/api/log?after=' + seq); },
+
+    /**
+     * POST /api/sweep/start
+     * @param {string} mode — 'addr' 或 'freq'
+     */
+    sweepStart(mode) { return _fetch('POST', '/api/sweep/start', { mode }); },
+
+    /** POST /api/sweep/stop */
+    sweepStop()      { return _fetch('POST', '/api/sweep/stop'); },
+
+    /** GET /api/sweep/status */
+    sweepStatus()    { return _fetch('GET', '/api/sweep/status'); }
   };
 
 })();

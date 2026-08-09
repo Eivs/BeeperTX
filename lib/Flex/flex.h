@@ -1003,6 +1003,269 @@ size_t tf_encode_flex_tone_only_msg(uint64_t cap_code, uint8_t *flex_pckt,
                                         error, &config, NULL);
 }
 
+/* ============================================================================
+ * 批量编码 (追码优化): 一次 ERS + 连续多 Frame, 每 Frame 多地址多消息
+ *
+ * 协议依据: ARIB STD-43A §3.4 — 整个 transmission 共享一次 ERS; 每个 Frame
+ * 必须自带 S1+FIW+S2 (寻呼机按帧边界唤醒, 靠 Sync1 锁定、FIW 匹配帧号)。
+ * 因此批量只省掉重复 ERS, 不省每帧同步头。
+ *
+ * 帧布局 (每 Frame 88 字, 1600 bps):
+ *   word 0      : BIW1 (e_biw=0, s_vfield = 1 + 地址域字数)
+ *   word 1..s-1 : Address Field (短地址 1 字/个, 顺序与向量域一一对应)
+ *   s..m-1      : Vector Field (每地址 1 字, msg_start 指向消息域)
+ *   m..87       : Message Field + Idle 填充
+ *
+ * v1 约束:
+ *   - 仅短地址 (capcode 1..1933312); 长地址返回 TF_LONG_ADDR_IN_BATCH
+ *   - 所有 Frame 的 FIW 固定 cycle=0, frame=0 (调用方要求保持 frame=0)
+ *   - 消息字数预算与现有单帧编码器逐位一致: 复用 create_*_msg 编码内核,
+ *     vector 的 msg_start 字段通过 tf_rebase_vector_msg_start 改写
+ * ========================================================================== */
+
+/* 批量 v1 不支持长地址 (长地址 vector 第 2 字即首消息字, 混帧布局需规范级
+ * 内联与实机验证, 留 v2) */
+#define TF_LONG_ADDR_IN_BATCH 4
+
+/** 批量消息条目 */
+struct tf_batch_msg {
+  uint64_t capcode;       /* 短地址 (1..1933312) */
+  const char *msg;        /* NULL = tone-only */
+  tf_message_type_t type; /* TF_MESSAGE_TYPE_ALPHA / _NUMERIC (tone 看 msg) */
+  const void *config;     /* 可选 (struct tf_message_config) */
+};
+
+static const struct tf_message_type_config tf_batch_alpha_config = {
+    .validator = NULL, .creator = create_alphanumeric_msg,
+    .max_chars = MAX_CHARS_ALPHA};
+static const struct tf_message_type_config tf_batch_numeric_config = {
+    .validator = is_valid_numeric_message, .creator = create_numeric_msg,
+    .max_chars = MAX_CHARS_NUMERIC};
+static const struct tf_message_type_config tf_batch_tone_config = {
+    .validator = NULL, .creator = create_tone_only_msg, .max_chars = 0};
+
+static const struct tf_message_type_config *
+tf_batch_config_for(const struct tf_batch_msg *m) {
+  if (!m->msg)
+    return &tf_batch_tone_config;
+  return (m->type == TF_MESSAGE_TYPE_ALPHA) ? &tf_batch_alpha_config
+                                            : &tf_batch_numeric_config;
+}
+
+/** 校验一条批量消息 (capcode 短地址 + 消息内容)。返回 0=OK, 否则负错误码。 */
+static int tf_batch_validate(const struct tf_batch_msg *m) {
+  int is_long = 0;
+  if (!is_capcode_valid(m->capcode, &is_long))
+    return -TF_INVALID_CAPCODE;
+  if (is_long)
+    return -TF_LONG_ADDR_IN_BATCH;
+  if (m->msg) {
+    const struct tf_message_type_config *cfg = tf_batch_config_for(m);
+    size_t len = strlen(m->msg);
+    if (len == 0 || len > cfg->max_chars)
+      return -TF_INVALID_MESSAGE;
+    if (cfg->validator && !cfg->validator(m->msg))
+      return -TF_INVALID_MESSAGE;
+  }
+  return 0;
+}
+
+/** 从已编码 FLEX 字还原 21-bit 数据字 (encode_word 的逆, 不校验 BCH)。 */
+static uint32_t tf_decode_word_data(uint32_t encoded) {
+  return (rev32(encoded >> 11) >> 11) & 0x1FFFFF;
+}
+
+/** 改写 vector 字的 msg_start 字段 (bit7..13), 其余字段与校验位重算。
+ *
+ * 注意: flex_checksum 用 dw | csum (OR 而非替换), 原库所有调用点低 4 位
+ * 均为 0 所以无碍; 这里 dw 已带旧校验 nibble, 必须先清空再重算。
+ */
+static uint32_t tf_rebase_vector_msg_start(uint32_t vec,
+                                           uint32_t new_msg_start) {
+  uint32_t dw = tf_decode_word_data(vec);
+  dw &= ~(uint32_t)0xF;                 /* 清旧校验 nibble */
+  dw &= ~((uint32_t)0x7F << 7);         /* 清旧 msg_start */
+  dw |= (new_msg_start & 0x7F) << 7;
+  dw = flex_checksum(dw);
+  return encode_word(rev32(dw));
+}
+
+/** 写一次 ERS (35 × 12 字节 = 420 字节), 返回下一个写入位置。 */
+static uint8_t *tf_write_preamble(uint8_t *p) {
+  uint32_t i;
+  for (i = 0; i < ERS_AMOUNT; i++) {
+    SAVE_VEC(p, flex_bs);
+    SAVE_VEC(p, flex_ar);
+    SAVE_VEC(p, flex_bs_inv);
+    SAVE_VEC(p, flex_ar_inv);
+  }
+  return p;
+}
+
+/** 写一个完整 Frame (S1 + FIW + S2 + 已交织的 88 字), 返回下一个写入位置。 */
+static uint8_t *tf_write_one_frame(uint8_t *p, uint32_t cycle,
+                                   uint32_t frame_num,
+                                   const uint32_t *frame_words) {
+  SAVE_VEC(p, flex_bit_sync_1);
+  SAVE_VEC(p, flex_a1);
+  SAVE_VEC(p, flex_b);
+  SAVE_VEC(p, flex_a1_inv);
+  SAVE_WORD(p, create_fiw(cycle, frame_num, 0, 0, 0));
+  SAVE_VEC(p, flex_cblock);
+  memcpy(p, frame_words, WORDS_PER_FRAME * sizeof(uint32_t));
+  p += WORDS_PER_FRAME * sizeof(uint32_t);
+  return p;
+}
+
+/**
+ * @brief 用现有 creator 编码消息到 scratch, 返回消息字数 (不含 vector 字)。
+ *
+ * creator 总是把 vector 写到 scratch[0]、消息字从 scratch[1] 起连续写。
+ * 编码内核与单帧路径完全一致, 字数预算不可能与实际布局偏离。
+ */
+static uint32_t tf_count_msg_words(const struct tf_batch_msg *m,
+                                   const struct tf_message_type_config *cfg) {
+  uint32_t scratch[WORDS_PER_FRAME] = {0};
+  uint32_t fwc = 0;
+  cfg->creator(scratch, m->msg, 0, &fwc, 0 /*is_long*/, m->config);
+  return (fwc > 0) ? (fwc - 1) : 0;
+}
+
+/**
+ * @brief 填充一个 Frame (BIW + 地址域 + 向量域 + 消息域 + idle) 并做块交织。
+ * @param msgs  批量消息数组
+ * @param start 本帧第一个消息下标 (含)
+ * @param end   本帧结束下标 (不含)
+ */
+static void tf_build_frame(uint32_t *frame_words,
+                           const struct tf_batch_msg *msgs, size_t start,
+                           size_t end) {
+  size_t i, n = end - start;
+  uint32_t a_pos, v_pos, m_pos;
+  uint32_t scratch[WORDS_PER_FRAME];
+
+  memset(frame_words, 0, WORDS_PER_FRAME * sizeof(uint32_t));
+
+  /* ---- 1. Address Field (短地址 1 字/个) ---- */
+  a_pos = 1; /* BIW 占 word 0 */
+  for (i = start; i < end; i++)
+    frame_words[a_pos++] = create_short_address((uint32_t)msgs[i].capcode);
+
+  /* ---- 2. 布局: 向量域紧跟地址域, 消息域紧跟向量域 ---- */
+  v_pos = 1 + (uint32_t)n;        /* s_vfield = 1 + 地址字数 */
+  m_pos = v_pos + (uint32_t)n;    /* 每地址 1 个向量字 */
+
+  frame_words[0] = create_biw1(0, 0, v_pos, 0, 0);
+
+  /* ---- 3. Vector Field + Message Field ---- */
+  for (i = start; i < end; i++) {
+    const struct tf_batch_msg *m = &msgs[i];
+    const struct tf_message_type_config *cfg = tf_batch_config_for(m);
+    uint32_t fwc = 0;
+    uint32_t k;
+
+    if (!m->msg) { /* tone-only: 无独立消息字 */
+      frame_words[v_pos++] = create_tone_only_vector_word();
+      continue;
+    }
+
+    /* 复用现有编码内核生成 vector + 消息字, 再改写 msg_start 指向真实位置 */
+    cfg->creator(scratch, m->msg, 0, &fwc, 0, m->config);
+    frame_words[v_pos] = tf_rebase_vector_msg_start(scratch[0], m_pos);
+    for (k = 1; k < fwc; k++)
+      frame_words[m_pos + k - 1] = scratch[k];
+    v_pos++;
+    m_pos += fwc - 1;
+  }
+
+  /* ---- 4. Idle 填充 (交替全 1 / 全 0) ---- */
+  for (i = m_pos; i < WORDS_PER_FRAME; i++)
+    frame_words[i] = (i & 1) ? 0 : 0xFFFFFFFF;
+
+  /* ---- 5. 块交织 ---- */
+  for (i = 0; i < BLOCKS_PER_FRAME; i++)
+    interleave_block((uint32_t)i, frame_words);
+}
+
+/**
+ * @brief 批量编码: 一次 ERS + 连续多 Frame, 帧内多地址多消息。
+ *
+ * @param msgs        批量消息数组 (v1 仅短地址)
+ * @param msg_count   消息数量
+ * @param out         输出缓冲区 (需 ≥ ERS(420) + 1 帧(375))
+ * @param out_size    输出缓冲区大小
+ * @param error       [out] 错误码 (0=无错误)
+ * @param encoded_msgs [out] 实际放入的消息数 (缓冲区满时 < msg_count; 可传 NULL)
+ * @return 实际写入字节数; 失败返回 0 (error 置非零)
+ */
+size_t tf_encode_flex_batch(const struct tf_batch_msg *msgs, size_t msg_count,
+                            uint8_t *out, size_t out_size, int *error,
+                            size_t *encoded_msgs) {
+  uint8_t *p;
+  size_t i, enc = 0;
+
+  if (!error)
+    return 0;
+  *error = 0;
+  if (encoded_msgs)
+    *encoded_msgs = 0;
+  if (!msgs || msg_count == 0 || !out) {
+    *error = -TF_INVALID_MESSAGE;
+    return 0;
+  }
+
+  /* 最小输出: ERS 420 B + 1 帧 375 B */
+  if (out_size < (size_t)(ERS_AMOUNT * 12 + 375)) {
+    *error = -TF_INVALID_FLEXBUFFER;
+    return 0;
+  }
+
+  /* 预校验全部消息 */
+  for (i = 0; i < msg_count; i++) {
+    int rc = tf_batch_validate(&msgs[i]);
+    if (rc) {
+      *error = rc;
+      return 0;
+    }
+  }
+
+  p = tf_write_preamble(out);
+
+  i = 0;
+  while (i < msg_count) {
+    uint32_t frame_words[WORDS_PER_FRAME];
+    size_t j = i;
+    uint32_t used = 0; /* 地址+向量+消息字数 (不含 BIW) */
+
+    if ((size_t)(p - out) + 375 > out_size)
+      break; /* 无余量: 部分成功 (整帧写入, 不切半帧) */
+
+    /* 贪心: 装尽量多的消息进本帧 */
+    while (j < msg_count) {
+      const struct tf_message_type_config *cfg = tf_batch_config_for(&msgs[j]);
+      uint32_t need = 2 + tf_count_msg_words(&msgs[j], cfg); /* 短地址 */
+      if (used + need > WORDS_PER_FRAME - 1)
+        break;
+      used += need;
+      j++;
+    }
+    if (j == i) {
+      /* 单条消息超帧容量 (理论不可达: 最长 alpha 84 字 + 2 ≤ 87) */
+      *error = -TF_INVALID_MESSAGE;
+      return 0;
+    }
+
+    tf_build_frame(frame_words, msgs, i, j);
+    p = tf_write_one_frame(p, 0 /*cycle*/, 0 /*frame=0*/, frame_words);
+    i = j;
+    enc = i;
+  }
+
+  if (encoded_msgs)
+    *encoded_msgs = enc;
+  return (size_t)(p - out);
+}
+
 #ifdef __cplusplus
 }
 #endif

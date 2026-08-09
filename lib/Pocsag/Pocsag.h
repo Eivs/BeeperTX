@@ -13,7 +13,7 @@
 // 缓冲区大小限制
 // ============================================================================
 #define MAX_CODEMORDS 512    // 最多消息码字数
-#define MAX_BASEBAND 768     // 基带码字总数
+#define MAX_BASEBAND 1024    // 基带码字总数 (单前导连续流: 18 前导 + ≤24 batch×17 + 16 尾 ≤ 442)
 #define MAX_MESSAGE_LEN 1024 // 输入消息最大字节数
 
 // ============================================================================
@@ -46,6 +46,28 @@ public:
   void encode(unsigned long addr, int function, const uint8_t *msg,
               size_t length, DisplayMode mode = MODE_ALPHANUMERIC,
               bool invert = false);
+
+  /**
+   * @brief 追码批量打包 — 单前导码连续多 Batch 调度。
+   *
+   * 1 个 Preamble 贯穿全程, 连续 N 个 Batch (ITU-R M.584 §2.2):
+   *   - 每 Batch = [SYNC] + 16 槽; 地址码字放 (addr & 0x07)*2 槽
+   *   - 消息码字从地址槽后连续放置, 可跨 SYNC 延伸到下一个 Batch
+   *   - 跨入的头部槽不再放地址, 对应 frame 的地址顺延到更后的 Batch
+   *   - 消息 = 地址十进制串 (与逐地址发射一致, 消息格式与功能码匹配)
+   *
+   * @param addresses  地址数组 (任意顺序/条数, ≤21-bit)
+   * @param addrCount  地址数量
+   * @param function   2-bit 功能码 (0-3)
+   * @param mode       消息编码方式 (NUMERIC=4-bit BCD, ALPHANUMERIC=7-bit ASCII)
+   * @param invert     反相发射
+   * @param addrEncoded [out] 可选: 成功编码的地址数
+   * @param skipped    [out] 可选: 长度 addrCount, 未编码 (超 MAX_BATCH/基带上限) 的索引置 true
+   * @return 基带总码字数; 0 = 无任何地址可编码
+   */
+  int encodeBatchMulti(const uint32_t *addresses, int addrCount,
+                       int function, DisplayMode mode, bool invert,
+                       int *addrEncoded = nullptr, bool *skipped = nullptr);
 
   /** @return 基带码字缓冲区指针 */
   const unsigned long *getBaseband() const { return m_baseband; }

@@ -8,7 +8,7 @@
  * 协议格式: <CMD> [key=value ...]\r\n
  * 回应:     OK <cmd> [...] 或 ERR <cmd> code=<n>
  *
- * 支持命令: HELP, STATUS, CONFIG, SET, TX, WIFI, SCAN, RESET, PING
+ * 支持命令: HELP, STATUS, CONFIG, SET, TX, SWEEP, STOP, WIFI, SCAN, SAVE, RESET, PING
  *
  * 使用方式:
  * @code
@@ -54,6 +54,10 @@ private:
   void cmdTx(const char* args);
   void cmdWifi(const char* args);
   void cmdScan();
+  void cmdSweep(const char* args);
+  void cmdSweepStatus();
+  void cmdStop();
   void cmdReset();
   void cmdPing();
+  void cmdSave();
 };

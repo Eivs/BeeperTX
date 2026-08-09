@@ -1,38 +1,31 @@
 /*
- * Project: Si4463 Radio Library for ESP32
- * Original Author: Zak Kemble, contact@zakkemble.co.uk (AVR/Arduino version)
- * Ported for ESP32 + RF switch control
- * Copyright: (C) 2017 by Zak Kemble
- * License: GNU GPL v3 (see License.txt)
- *
- * Ported from the AVR/Arduino library with these adaptations:
- *   - Unified memory map (no PROGMEM needed on ESP32)
- *   - Arduino framework SPI, GPIO, and interrupt APIs
- *   - Automatic RF TX/RX antenna switch via GPIO2/GPIO3
+ * Si4463 射频驱动 — ESP32 移植版
+ * 原库: Zak Kemble (AVR/Arduino, GPL v3), 见 Si446x.h 头部
+ * 本实现: 统一内存映射 (无 PROGMEM) / Arduino SPI / 跨核互斥 /
+ *         Direct TX + RF 开关 + 频率控制增强
  */
 
 #include "Si446x.h"
-#include "Si446x_config.h"
-#include "Si446x_defs.h"
 #include "radio_config.h"
 #include <Arduino.h>
 #include <SPI.h>
 #include <stdint.h>
 #include <string.h>
+#include "esp_task_wdt.h"
 
 // ------------------------------------------------------------------
-// Pin variables — initialised from config defaults, override at runtime
+// 引脚 — 初始 -1 (未设置), 由应用在 init 前调用 Si446x_setPins() 指定
 // ------------------------------------------------------------------
-static int8_t _pin_csn = SI446X_CSN;
-static int8_t _pin_sdn = SI446X_SDN;
-static int8_t _pin_irq = SI446X_IRQ;
-static int8_t _pin_txData = SI446X_TX_DATA_PIN;
-static int8_t _pin_sclk = SI446X_SCLK;
-static int8_t _pin_mosi = SI446X_MOSI;
-static int8_t _pin_miso = SI446X_MISO;
+static int8_t _pin_csn = -1;
+static int8_t _pin_sdn = -1;
+static int8_t _pin_irq = -1;
+static int8_t _pin_txData = -1;
+static int8_t _pin_sclk = -1;
+static int8_t _pin_mosi = -1;
+static int8_t _pin_miso = -1;
 
 // ------------------------------------------------------------------
-// Runtime pin override — call before Si446x_init()
+// 设置引脚 — init 前调用; 传 -1 保持当前值
 // ------------------------------------------------------------------
 void Si446x_setPins(int8_t csn, int8_t sdn, int8_t irq, int8_t txData,
                     int8_t sclk, int8_t mosi, int8_t miso) {
@@ -53,7 +46,7 @@ void Si446x_setPins(int8_t csn, int8_t sdn, int8_t irq, int8_t txData,
 }
 
 // ------------------------------------------------------------------
-// SPI abstraction — always read from _pin_csn
+// SPI 抽象 — 片选使用运行时引脚
 // ------------------------------------------------------------------
 static inline void spiSelect(void) { digitalWrite(_pin_csn, LOW); }
 static inline void spiDeselect(void) { digitalWrite(_pin_csn, HIGH); }
@@ -73,7 +66,7 @@ static inline void spiDeselect(void) { digitalWrite(_pin_csn, HIGH); }
 #define rssi_dBm(val) ((val / 2) - 134)
 
 // ------------------------------------------------------------------
-// Weak callbacks (user overrides by defining the same symbol)
+// 弱回调 — 应用定义同名符号即可覆盖
 // ------------------------------------------------------------------
 void __attribute__((weak)) SI446X_CB_CMDTIMEOUT(void) {}
 void __attribute__((weak)) SI446X_CB_RXBEGIN(int16_t rssi) { (void)(rssi); }
@@ -87,38 +80,79 @@ void __attribute__((weak)) SI446X_CB_WUT(void) {}
 void __attribute__((weak)) SI446X_CB_LOWBATT(void) {}
 
 // ------------------------------------------------------------------
-// Static configuration from WDS
+// WDS 生成的启动配置
 // ------------------------------------------------------------------
 static const uint8_t config[] = RADIO_CONFIGURATION_DATA_ARRAY;
+
+// Direct TX 位敲击码率 — 由 radio_config.h 的用户参数推导 (2FSK: 1 symbol = 1 bit)。
+// 替换 radio_config.h (换硬件版本/码率) 时记得同步该值, 否则发射速率与接收端
+// 失配 (换 512/1600 sps 配置而忘记设置 → 编译警告 + 回退 1200 sps)。
+#ifndef RADIO_CONFIGURATION_DATA_RSYMB_SPS
+#define RADIO_CONFIGURATION_DATA_RSYMB_SPS 1200
+#warning "RADIO_CONFIGURATION_DATA_RSYMB_SPS not defined in radio_config.h: " \
+         "Direct TX bit rate falls back to 1200 sps. Set it in the " \
+         "USER DEFINED PARAMETERS section to match the WDS Rsymb."
+#endif
 
 static volatile uint8_t enabledInterrupts[3];
 
 static volatile uint8_t isrState;
 static volatile uint8_t isrBusy;
+// 全局中断嵌套深度, 与 isrState (GPIO detach 计数) 独立。
+// 历史 bug: 原共用 isrState 使 doAPI 后全局中断被永久禁用 → esp_timer
+// 冻结 → 位敲击忙等卡死 → WDT 复位。独立后 ATOMIC 可正确配对恢复。
+static volatile uint8_t spiIntrState;
 
 // ------------------------------------------------------------------
-// Interrupt helpers for concurrent access protection
+// 全局中断开关 (嵌套计数)
 // ------------------------------------------------------------------
 static inline uint8_t interrupt_off(void) {
-  if (!isrBusy) {
+  if (spiIntrState == 0) {
     noInterrupts();
-    isrState = isrState + 1;
+    spiIntrState = 1;
+  } else {
+    spiIntrState++;  // 嵌套: 仅计数, 不重复关
   }
   return 1;
 }
 
 static inline uint8_t interrupt_on(void) {
-  if (!isrBusy) {
-    if (isrState > 0)
-      isrState = isrState - 1;
-    if (isrState == 0)
-      interrupts();
+  if (spiIntrState > 1) {
+    spiIntrState--;  // 嵌套退出
+  } else if (spiIntrState == 1) {
+    spiIntrState = 0;
+    interrupts();
   }
   return 0;
 }
 
 // ------------------------------------------------------------------
-// SPI chip-select helpers
+// 跨核 SPI 互斥 — txTask(core1) 与业务 loop(core0) 并发访问同一 Si4463
+// SPI 会触发 "Interrupt wdt timeout" 死锁。所有 SPI 事务持递归互斥锁:
+// 任务上下文阻塞等待 (可调度不关中断); ISR 不做 SPI, 只置标志。
+// ------------------------------------------------------------------
+static SemaphoreHandle_t si446xSpiMutex() {
+  // magic static: 编译器保证单线程首次初始化 (任务上下文, 非 ISR)
+  static SemaphoreHandle_t m = xSemaphoreCreateRecursiveMutex();
+  return m;
+}
+
+static void si446xSpiLock() {
+  xSemaphoreTakeRecursive(si446xSpiMutex(), portMAX_DELAY);
+}
+
+static void si446xSpiUnlock() {
+  xSemaphoreGiveRecursive(si446xSpiMutex());
+}
+
+// RAII 锁守卫 — 所有 return 路径自动解锁
+struct Si446xSpiGuard {
+  Si446xSpiGuard()  { si446xSpiLock(); }
+  ~Si446xSpiGuard() { si446xSpiUnlock(); }
+};
+
+// ------------------------------------------------------------------
+// 片选辅助 — CHIPSELECT() 循环保证先选中、循环体后必释放
 // ------------------------------------------------------------------
 static inline uint8_t cselect(void) {
   spiSelect();
@@ -136,7 +170,7 @@ static inline uint8_t cdeselect(void) {
   for (uint8_t _cs2 = interrupt_off(); _cs2; _cs2 = interrupt_on())
 
 // ------------------------------------------------------------------
-// Low-level API helpers
+// 底层 API 辅助
 // ------------------------------------------------------------------
 
 static uint8_t getResponse(void *buff, uint8_t len) {
@@ -156,8 +190,15 @@ static uint8_t getResponse(void *buff, uint8_t len) {
 
 static uint8_t waitForResponse(void *out, uint8_t outLen, uint8_t useTimeout) {
   uint16_t timeout = 40000;
+  uint16_t wdtCnt = 0;
   while (!getResponse(out, outLen)) {
     delayMicroseconds(10);
+    // CTS 长时间不拉高时忙等累计可超 5s → 喂 Task WDT, 避免忙等本身触发复位
+    if (++wdtCnt >= 100) {  // ~1ms 一次
+      wdtCnt = 0;
+      if (!xPortInIsrContext())
+        esp_task_wdt_reset();
+    }
     if (useTimeout && !--timeout) {
       SI446X_CB_CMDTIMEOUT();
       return 0;
@@ -167,8 +208,8 @@ static uint8_t waitForResponse(void *out, uint8_t outLen, uint8_t useTimeout) {
 }
 
 static void doAPI(void *data, uint8_t len, void *out, uint8_t outLen) {
-  // Disable the Si446x interrupt while communicating
-  uint8_t irq = Si446x_irq_off();
+  Si446xSpiGuard _lock;          // 跨核 SPI 互斥
+  uint8_t irq = Si446x_irq_off(); // 通信期间禁用射频中断
 
   if (waitForResponse(NULL, 0, 1)) {
     SI446X_ATOMIC() {
@@ -217,6 +258,7 @@ static uint16_t getADC(uint8_t adc_en, uint8_t adc_cfg, uint8_t part) {
 }
 
 static uint8_t getFRR(uint8_t reg) {
+  Si446xSpiGuard _lock;  // 跨核 SPI 互斥 (递归)
   uint8_t frr = 0;
   SI446X_ATOMIC() {
     CHIPSELECT() {
@@ -266,7 +308,7 @@ static void interrupt2(void *buff, uint8_t clearPH, uint8_t clearMODEM,
 }
 
 // ------------------------------------------------------------------
-// Hardware reset via SDN pin
+// SDN 硬件复位
 // ------------------------------------------------------------------
 static void resetDevice(void) {
   digitalWrite(_pin_sdn, HIGH);
@@ -276,7 +318,7 @@ static void resetDevice(void) {
 }
 
 // ------------------------------------------------------------------
-// Load WDS-generated configuration
+// 加载 WDS 启动配置 (config 数组 = [长度][命令字节...] 序列)
 // ------------------------------------------------------------------
 static void applyStartupConfig(void) {
   uint8_t buff[17];
@@ -288,10 +330,19 @@ static void applyStartupConfig(void) {
 }
 
 // ==================================================================
-// Public API
+// 公共 API
 // ==================================================================
 
 void Si446x_init() {
+  // 引脚必须已由 Si446x_setPins() 设置 (IRQ 可 -1 轮询), 否则中止
+  // 避免拿 -1 做 GPIO 操作。
+  if (_pin_csn < 0 || _pin_sdn < 0 || _pin_txData < 0 || _pin_sclk < 0 ||
+      _pin_mosi < 0 || _pin_miso < 0) {
+    Serial.println("[Si446x] ERROR: pins not set — call Si446x_setPins() "
+                   "before Si446x_init()");
+    return;
+  }
+
   spiDeselect();
 
   pinMode(_pin_csn, OUTPUT);
@@ -302,7 +353,7 @@ void Si446x_init() {
   if (_pin_irq >= 0)
     pinMode(_pin_irq, INPUT_PULLUP);
 
-  // Start SPI with explicit pins
+  // 用显式引脚启动 SPI
   SPI.begin(_pin_sclk, _pin_miso, _pin_mosi, -1);
 
   resetDevice();
@@ -313,10 +364,8 @@ void Si446x_init() {
   enabledInterrupts[IRQ_PACKET] =
       (1 << SI446X_PACKET_RX_PEND) | (1 << SI446X_CRC_ERROR_PEND);
 
-  // Note: GPIO configuration is applied by the WDS config during
-  // applyStartupConfig().  If your config doesn't set up the RF
-  // antenna switch or Direct TX data pins, call Si446x_configGPIO()
-  // or Si446x_configRFswitch() here.
+  // GPIO 配置由 WDS 配置 (applyStartupConfig) 完成; 若 WDS 未设置
+  // RF 开关 / Direct TX 引脚, 在此调用 Si446x_configGPIO()/RFswitch()
 
   if (_pin_irq >= 0)
     Si446x_irq_on(1);
@@ -326,9 +375,7 @@ void Si446x_init() {
   }
 }
 
-/**
- * @brief Configure all GPIO/NIRQ/SDO pins via GPIO_PIN_CFG command.
- */
+// GPIO_PIN_CFG 命令 — 模式枚举见 Si446x.h §4
 void Si446x_configGPIO(uint8_t gpio0, uint8_t gpio1, uint8_t gpio2,
                        uint8_t gpio3, uint8_t nirq, uint8_t sdo,
                        uint8_t genConfig) {
@@ -343,12 +390,7 @@ void Si446x_configGPIO(uint8_t gpio0, uint8_t gpio1, uint8_t gpio2,
   doAPI(data, sizeof(data), NULL, 0);
 }
 
-/**
- * @brief Configure GPIO2=TX_STATE, GPIO3=RX_STATE for RF antenna switch.
- *
- * Convenience wrapper — matches the ASHINING drv_periph:
- *   SI446x_Config_Gpio(0, 0, 33|0x40, 32|0x40, 0, 0, 0)
- */
+// GPIO2=TX_STATE, GPIO3=RX_STATE — 单天线半双工 RF 开关 (0x61/0x60)
 void Si446x_configRFswitch(void) {
   Si446x_configGPIO(0x00, 0x00,
                     SI446X_GPIO_MODE_TX_STATE | SI446X_GPIO_PULL_EN, // 0x61
@@ -358,7 +400,7 @@ void Si446x_configRFswitch(void) {
 }
 
 // ==================================================================
-// Direct TX API
+// Direct TX 模式
 // ==================================================================
 
 void Si446x_startDirectTX(uint8_t channel, uint8_t async) {
@@ -368,9 +410,8 @@ void Si446x_startDirectTX(uint8_t channel, uint8_t async) {
   clearFIFO();
   interrupt2(NULL, 0, 0, 0xFF);
 
-  // MODEM_MOD_TYPE[7] = TX_DIRECT_MODE_TYPE:
-  //   0 = Synchronous (chip outputs TX bit clock on GPIO1)
-  //   1 = Asynchronous (MCU controls data rate, no bit clock)
+  // MODEM_MOD_TYPE[7]: 0=同步 (芯片在 GPIO1 输出位时钟, GPIO0 下降沿
+  // 采样), 1=异步 (MCU 直接控制速率, 无位时钟)
   uint8_t modType = getProperty(SI446X_MODEM_MOD_TYPE);
   if (async)
     modType |= SI446X_MODEM_MOD_TYPE_MASK_ASYNC;
@@ -378,8 +419,7 @@ void Si446x_startDirectTX(uint8_t channel, uint8_t async) {
     modType &= SI446X_MODEM_MOD_TYPE_MASK_SYNC;
   setProperty(SI446X_MODEM_MOD_TYPE, modType);
 
-  // START_TX — the FIFO/length fields are ignored by the chip when
-  // MODEM_MOD_TYPE selects a direct data source.
+  // Direct 数据源下 START_TX 的 FIFO/长度字段被芯片忽略
   uint8_t data[] = {SI446X_CMD_START_TX,
                     channel,
                     0, // CONDITION — stay in TX
@@ -394,28 +434,24 @@ void Si446x_startDirectTX(uint8_t channel, uint8_t async) {
 }
 
 void Si446x_txDirectWrite(const uint8_t *data, uint8_t len) {
-  // Bit period for the configured data rate.
-  // From radio_config.h: Rsymb(sps) = 1200, 2FSK → 1200 bps
-  //   bitPeriod_us = 1_000_000 / 1200 ≈ 833 µs
-  const uint32_t BIT_PERIOD_US = 833;
-
-  // Si4463 reads GPIO0 on each bit clock.
-  // Simple UART-style: start bit (low) + 8 data bits (LSB first)
-  //                        + stop bit (high)
+  // 按 radio_config.h 的码率 (RADIO_CONFIGURATION_DATA_RSYMB_SPS,
+  // 1200 sps → 833 µs/bit) 做 UART 式输出:
+  // 起始位(低) + 8 数据位(LSB first) + 停止位(高)
+  const uint32_t BIT_PERIOD_US = 1000000UL / RADIO_CONFIGURATION_DATA_RSYMB_SPS;
   for (uint8_t i = 0; i < len; i++) {
     uint8_t byte = data[i];
 
-    // Start bit (low)
+    // 起始位 (低)
     digitalWrite(_pin_txData, LOW);
     delayMicroseconds(BIT_PERIOD_US);
 
-    // 8 data bits, LSB first
+    // 8 数据位, LSB first
     for (uint8_t b = 0; b < 8; b++) {
       digitalWrite(_pin_txData, (byte >> b) & 1);
       delayMicroseconds(BIT_PERIOD_US);
     }
 
-    // Stop bit (high) — for receiver synchronisation
+    // 停止位 (高) — 接收端同步
     digitalWrite(_pin_txData, HIGH);
     delayMicroseconds(BIT_PERIOD_US);
   }
@@ -424,15 +460,11 @@ void Si446x_txDirectWrite(const uint8_t *data, uint8_t len) {
 void Si446x_stopTX(void) { setState(IDLE_STATE); }
 
 // ==================================================================
-// Frequency Control
+// 频率控制
 // ==================================================================
 
-/**
- * Band lookup table (30 MHz XTAL, Si4463 Rev B1).
- *
- * OUTDIV is chosen to keep the VCO-derived frequency within the
- * valid range.  The CLKGEN_BAND values are from WDS-generated configs.
- */
+// 频段表: OUTDIV 使 VCO 落在有效范围, CLKGEN_BAND 取自 WDS 配置。
+// 频段边界按 radio_config.h 的晶振 (默认 30 MHz) 设计, 换晶振需重算。
 typedef struct {
   uint32_t minKHz;
   uint32_t maxKHz;
@@ -441,33 +473,33 @@ typedef struct {
 } freqBand_t;
 
 static const freqBand_t FREQ_BANDS[] = {
-    {0, 220000, 12, 0x0D}, // e.g. 156 MHz
+    {0, 220000, 12, 0x0D}, // 例: 156 MHz
     {220000, 295000, 8, 0x0C}, {295000, 390000, 6, 0x0B},
-    {390000, 520000, 4, 0x0A}, // e.g. 425 MHz
+    {390000, 520000, 4, 0x0A}, // 例: 425 MHz
     {520000, 700000, 3, 0x09}, {700000, 1050001, 2, 0x08},
 };
 
 void Si446x_setFrequency(uint8_t inte, uint32_t frac, uint16_t step,
                          uint8_t band) {
-  // Stay in a safe state while changing frequency
+  // 改频前回到 READY, 避免在发射态改寄存器
   uint8_t irq = Si446x_irq_off();
   setState(SI446X_STATE_READY);
 
   setProperty(SI446X_MODEM_CLKGEN_BAND, band);
 
   uint8_t data[] = {
-      (uint8_t)(step >> 8), // CHANNEL_STEP_SIZE_1 (0x4004)
-      (uint8_t)(step),      // CHANNEL_STEP_SIZE_0 (0x4005)
+      (uint8_t)(step >> 8), // CHANNEL_STEP_SIZE 高字节 (0x4004)
+      (uint8_t)(step),      // CHANNEL_STEP_SIZE 低字节 (0x4005)
   };
   setProperties(SI446X_FREQ_CONTROL_CHANNEL_STEP_SIZE, data, 2);
 
   data[0] = inte;                  // FREQ_CONTROL_INTE (0x4000)
-  data[1] = (uint8_t)(frac >> 16); // FREQ_CONTROL_FRAC_2 (0x4001)
-  data[2] = (uint8_t)(frac >> 8);  // FREQ_CONTROL_FRAC_1 (0x4002)
-  data[3] = (uint8_t)(frac);       // FREQ_CONTROL_FRAC_0 (0x4003)
+  data[1] = (uint8_t)(frac >> 16); // FREQ_CONTROL_FRAC[2] (0x4001)
+  data[2] = (uint8_t)(frac >> 8);  // FREQ_CONTROL_FRAC[1] (0x4002)
+  data[3] = (uint8_t)(frac);       // FREQ_CONTROL_FRAC[0] (0x4003)
   setProperties(SI446X_FREQ_CONTROL_INTE, data, 4);
 
-  // Perform image-rejection calibration for the new frequency
+  // 新频点图像抑制校准
   uint8_t ircal = SI446X_CMD_IRCAL;
   doAPI(&ircal, 1, NULL, 0);
 
@@ -475,7 +507,7 @@ void Si446x_setFrequency(uint8_t inte, uint32_t frac, uint16_t step,
 }
 
 uint8_t Si446x_setFrequencyKHz(uint32_t freqKHz) {
-  // Find the band
+  // 查频段表
   const freqBand_t *band = NULL;
   for (uint8_t i = 0; i < sizeof(FREQ_BANDS) / sizeof(FREQ_BANDS[0]); i++) {
     if (freqKHz > FREQ_BANDS[i].minKHz && freqKHz <= FREQ_BANDS[i].maxKHz) {
@@ -486,24 +518,18 @@ uint8_t Si446x_setFrequencyKHz(uint32_t freqKHz) {
   if (!band)
     return 0;
 
-  // N = fRF × OUTDIV / fXO
-  // fXO = 30 MHz, work in kHz
-  // N × 2^19 in fixed-point for the fractional calculation
-  const uint32_t fXO = 30000; // kHz
+  // N = fRF × OUTDIV / fXO, 定点化 ×2^19 (fXO 取自 radio_config.h)
+  const uint32_t fXO = (uint32_t)(RADIO_CONFIGURATION_DATA_RADIO_XO_FREQ / 1000); // kHz
   const uint64_t N_fxp = ((uint64_t)freqKHz * band->outdiv << 19) / fXO;
-  // N_fxp = N × 2^19  (in integer)
-  // FC_FRAC should have bit 19 always set, so effective = (N - floor(N) + 1) ×
-  // 2^19 FC_INTE = floor(N) - 1
+  // FC_FRAC 恒置 bit19, 即 (N - floor(N) + 1) × 2^19; FC_INTE = floor(N) - 1
 
   const uint32_t N_int = (uint32_t)(N_fxp >> 19); // floor(N)
-  const uint32_t N_frac =
-      (uint32_t)(N_fxp & ((1 << 19) - 1)); // fractional part × 2^19
+  const uint32_t N_frac = (uint32_t)(N_fxp & ((1 << 19) - 1)); // 小数部分
   const uint8_t inte = (uint8_t)(N_int - 1);
-  const uint32_t frac = N_frac | (1 << 19); // re-center so MSB = 1
+  const uint32_t frac = N_frac | (1 << 19); // 置 MSB 重新居中
 
-  // Channel step size: default 2.5 kHz spacing
-  // step_fxp = step_kHz × OUTDIV × 2^19 / fXO
-  const uint32_t stepKHz = 2; // 2 kHz steps (adjustable)
+  // 信道步进 2 kHz
+  const uint32_t stepKHz = 2;
   const uint16_t step =
       (uint16_t)(((uint64_t)stepKHz * band->outdiv << 19) / fXO);
 
@@ -541,18 +567,18 @@ int16_t Si446x_getRSSI() {
 si446x_state_t Si446x_getState() { return getState(); }
 
 // ------------------------------------------------------------------
-// Helper: derive OUTDIV from CLKGEN_BAND register value
+// 由 CLKGEN_BAND 反查 OUTDIV
 // ------------------------------------------------------------------
 static uint8_t outdivFromBand(uint8_t band) {
   for (uint8_t i = 0; i < sizeof(FREQ_BANDS) / sizeof(FREQ_BANDS[0]); i++) {
     if (FREQ_BANDS[i].clkgenBand == band)
       return FREQ_BANDS[i].outdiv;
   }
-  return 0; // unknown
+  return 0; // 未知频段
 }
 
 // ------------------------------------------------------------------
-// Read back frequency from live registers
+// 从实时寄存器回读频率
 // ------------------------------------------------------------------
 uint32_t Si446x_getFrequencyKHz(void) {
   uint8_t inte = getProperty(SI446X_FREQ_CONTROL_INTE);
@@ -567,7 +593,7 @@ uint32_t Si446x_getFrequencyKHz(void) {
     return 0;
 
   // fRF = 30M × (FC_INTE + 1 + (FC_FRAC&0x7FFFF)/2^19) / OUTDIV
-  // Keep all arithmetic in kHz / 64-bit to avoid float
+  // 全用 kHz + 64-bit 整数运算, 避免浮点
   uint32_t fKHz = (uint32_t)((30000ULL * ((inte + 1ULL) * 524288ULL +
                                           (frac & 0x7FFFFULL))) /
                              (od * 524288ULL));
@@ -588,9 +614,9 @@ void Si446x_setupWUT(uint8_t r, uint16_t m, uint8_t ldc, uint8_t config_flags) {
     return;
 
   uint8_t irq = Si446x_irq_off();
-
   setProperty(SI446X_GLOBAL_WUT_CONFIG, 0);
 
+  // 按标志位组装: 运行 / 低电量唤醒 / RX 周期唤醒
   uint8_t doRun = !!(config_flags & SI446X_WUT_RUN);
   uint8_t doBatt = !!(config_flags & SI446X_WUT_BATT);
   uint8_t doRx = (config_flags & SI446X_WUT_RX);
@@ -653,6 +679,7 @@ uint8_t Si446x_sleep() {
 }
 
 void Si446x_read(void *buff, uint8_t len) {
+  Si446xSpiGuard _lock;  // 跨核 SPI 互斥 (递归)
   SI446X_ATOMIC() {
     CHIPSELECT() {
       spi_transfer_nr(SI446X_CMD_READ_RX_FIFO);
@@ -664,6 +691,7 @@ void Si446x_read(void *buff, uint8_t len) {
 
 uint8_t Si446x_TX(void *packet, uint8_t len, uint8_t channel,
                   si446x_state_t onTxFinish) {
+  Si446xSpiGuard _lock;  // 跨核 SPI 互斥 (递归, 序列原子)
   uint8_t irq = Si446x_irq_off();
 
   if (getState() == SI446X_STATE_TX) {
@@ -798,7 +826,7 @@ uint8_t Si446x_dump(void *buff, uint8_t group) {
 }
 
 // ------------------------------------------------------------------
-// Interrupt control
+// 中断控制 — IRQ=-1 (轮询) 时全部为空操作
 // ------------------------------------------------------------------
 uint8_t Si446x_irq_off() {
   if (_pin_irq < 0)
@@ -819,9 +847,22 @@ void Si446x_irq_on(uint8_t origVal) {
 }
 
 // ------------------------------------------------------------------
-// Service routine — handles radio events
+// 事件轮询 — 由 Arduino loop 或 GPIO 中断调用
+// ISR 上下文只置标志 (无法获取递归互斥锁), 实际 SPI 处理由任务上下文执行
 // ------------------------------------------------------------------
+static volatile bool g_servicePending = false;
+
 void Si446x_SERVICE() {
+  // ISR 上下文: 仅标记待处理, 不做 SPI
+  if (xPortInIsrContext()) {
+    g_servicePending = true;
+    return;
+  }
+
+  // 任务上下文: 持跨核锁执行事件处理 (内部 doAPI 递归加锁)
+  Si446xSpiGuard _lock;
+  g_servicePending = false;
+
   isrBusy = 1;
 
   uint8_t interrupts[8];

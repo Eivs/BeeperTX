@@ -74,10 +74,11 @@ src/main.cpp                         组装层: 硬件初始化和组件编排
       → Transmitter::send(Config)          // 统一入口, 自动路由编码器
         → [POCSAG] PocsagEncoder::encode() + GB.get() GB2312
         → [FLEX]   FlexEncoder::encode()  + GB.get() GB2312
-      → Transmitter::enterTx()            // Si446x_startDirectTX()
-      → [POCSAG] sendPreambleBits() + sendCodewords()  // GPIO0 bit-banging
-      → [FLEX]   sendBytes()                              // GPIO0 bit-banging
-      → Transmitter::exitTx()             // Si446x_stopTX()
+      → sendPocsagRaw() / sendFlexRaw()      // 深拷贝入队
+  → txTask (core 1) 异步发射:
+      → Transmitter::enterTx()               // Si446x_startDirectTX()
+      → sendCodewords() / sendBytes()        // GPIO0 bit-banging
+      → Transmitter::exitTx()                // Si446x_stopTX()
   → CmdResponse → 序列化返回
   → Si4463 直接 FSK 调制发射 (Direct TX Mode, 非 FIFO)
 ```
@@ -138,6 +139,7 @@ AP 模式下内置 Captive Portal DNS，手机连接后自动弹出配网页面�
 | `WIFI` | WiFi 状态 | `WIFI` |
 | `WIFI` | 设置 WiFi 凭据并重启 | `WIFI ssid=MyWiFi pass=12345678` |
 | `SCAN` | 扫描附近 WiFi 网络 | `SCAN` |
+| `SAVE` | 将当前发射配置持久化到 NVS（重启后自动恢复） | `SAVE` |
 | `RESET` | 重启设备 | `RESET` |
 | `PING` | 心跳检测 | `PING` |
 
@@ -156,7 +158,7 @@ AP 模式下内置 Captive Portal DNS，手机连接后自动弹出配网页面�
   SET key=value ...     Set TX parameters
      freq=<kHz>         Frequency (119000-1050000)
      pwr=<0-127>        TX power
-     baud=<rate>        Baud rate (512/1200/1600/2400/3200/6400)
+     baud=<rate>        Baud rate (POCSAG: 512/1200, FLEX: 1600/2400/3200)
      addr=<n>           Pager address/capcode
      encoding=pocsag|flex
      phase=norm|inv     Phase (normal/inverted)
@@ -167,11 +169,27 @@ AP 模式下内置 Captive Portal DNS，手机连接后自动弹出配网页面�
   WIFI                  Show WiFi status
   WIFI ssid=X pass=Y    Set WiFi credentials (triggers reboot)
   SCAN                  Scan nearby WiFi networks
+  SAVE                  Persist current TX config to NVS (survives reboot)
   RESET                 Reboot device
   PING                  Heartbeat
 ```
 
 ### 命令详解与交互示例
+
+#### `SAVE` — 持久化配置
+
+将当前发射配置写入 ESP32 NVS（命名空间 `beepertx`），重启后由 `api_init()` 自动恢复。
+
+```
+> SET freq=155000 baud=1200
+OK SET
+> SAVE
+OK SAVE: config persisted to NVS
+> RESET
+...（重启）...
+> CONFIG
+freq=155000kHz baud=1200 ...
+```
 
 #### `PING` — 心跳检测
 
@@ -224,7 +242,7 @@ OK CONFIG encoding=pocsag phase=norm tone=D msgType=alpha freq=152675kHz pwr=127
 |------|--------|------|
 | `freq` | 119000–1050000 (kHz) | `freq=153950` |
 | `pwr` | 0–127 | `pwr=100` |
-| `baud` | 512 / 1200 / 1600 / 2400 / 3200 / 6400 | `baud=2400` |
+| `baud` | 512 / 1200 (POCSAG); 1600 / 2400 / 3200 (FLEX) | `baud=2400` |
 | `addr` | POCSAG: 0–2097151, FLEX: CAPCODE | `addr=12345` |
 | `encoding` | `pocsag` / `flex` | `encoding=flex` |
 | `phase` | `norm` / `inv` | `phase=inv` |
@@ -377,9 +395,9 @@ ERR <CMD> code=<N> detail=<M>
 | encoding | POCSAG / FLEX | POCSAG | 编码协议 |
 | freqKHz | 119000–1050000 | 152675 | 发射频率 (kHz) |
 | txPower | 0–127 | 127 | PA 功率 (127=+20dBm) |
-| phase | NORMAL / INVERTED | NORMAL | FSK 相位极性 |
-| tone | A / B / C / D | D | POCSAG 铃音/功能码 |
-| baudRate | 512/1200/1600/2400/3200/6400 | 1200 | 码率 (bps) |
+| phase | NORMAL / INVERTED | NORMAL | FSK 相位极性 (仅 POCSAG; FLEX 固定直发) |
+| tone | A / B / C / D | D | POCSAG 铃音/功能码 (仅 POCSAG; FLEX 不适用) |
+| baudRate | POCSAG: 512/1200, FLEX: 1600/2400/3200 | 1200 / 1600 | 码率 (bps, 按编码) |
 | msgType | NUMERIC / ALPHANUMERIC | ALPHANUMERIC | 消息类型 |
 | address | 0–2097151 (POCSAG) | 1000 | 寻呼地址 / CAPCODE |
 | message | UTF-8, 最大 255 字节 | "BeeperTX OK" | 消息内容 |
@@ -577,7 +595,7 @@ GB2312 字节流:  BC F2 CC E5 D6 D0 CE C4 20 41 42 43 20 31 32 33
   0F 20 41 42 43 20 31 32 33 → 切英文: " ABC 123" (单字节 ASCII)
 ```
 
-在 `sendFlex()` 中实现:
+在 `Transmitter::send()` 中实现:
 
 ```cpp
 static uint8_t mixed[512];
@@ -649,14 +667,14 @@ encoder.encode(cfg.address, (const char*)mixed, FlexEncoder::ALPHA);
 
 | 特性 | POCSAG | FLEX |
 |------|--------|------|
-| 速率 | 512 / 1200 / 2400 bps | 1600 / 3200 / 6400 bps |
+| 速率 | 512 / 1200 bps | 1600 / 2400 / 3200 bps |
 | 前导码 | 576 bits 交替 1/0 | ERS 35 次 + S1 同步 |
 | 纠错 | BCH(31,21) | BCH(31,21) + 块交织 |
 | 地址 | 21-bit, 单帧 1 地址 | 短/长地址, 帧内多地址 |
 | 数字模式 | func=0, 4-bit BCD | V=011 Numeric |
 | 字母模式 | func=2/3, 7-bit ASCII | V=101 Alphanumeric |
 | 中文方式 | func=3 + `\x0E`/`\x0F` | V=101 alpha + `\x0E`/`\x0F` |
-| 编码器 | Pocsag::deCodeAlpha/Numeric | FlexEncoder + sendFlex() |
+| 编码器 | Pocsag::deCodeAlpha/Numeric | FlexEncoder (send 内编码, sendFlexRaw 异步发射) |
 | 调制 | 直接 FSK (GPIO0 bit-bang) | 直接 FSK (GPIO0 bit-bang) |
 | 缓冲区 | 静态 (`.bss` 段) | 静态 (`.bss` 段) |
 
@@ -715,8 +733,9 @@ BeeperTX started
 
 ## 已知限制
 
-1. **忙等待时序**: `Transmitter` 的位流发送使用 `while (esp_timer_get_time() < next)` 忙等待，
-   约 1–2s 阻塞，可能触发 WDT。代码中每 500 位 `esp_task_wdt_reset()` 一次。
+1. **忙等待时序**: txTask (core 1) 位敲击期间使用 `busyWaitUntil()` 忙等待实现 µs 级精确时序，
+   约 1–2s (POCSAG) 或 ~10s (FLEX 批量)。代码中每 500 bit `esp_task_wdt_reset()` 喂狗。
+   Sweeper 为非阻塞状态机 (`loop()` 不持有忙等待)，仅 txTask 独占 core 1 发射。
 2. **POCSAG 中文默认模式**: `deCodeAlpha()` 硬编码寻呼机默认中文模式 (`inGB = true`, func=3)，
    纯 ASCII 消息会额外插入 `\x0F` 控制字符，但对显示无影响。
 3. **FLEX 中文长度限制**: 受 FLEX 单帧最大 248 字符限制，中英混排消息
@@ -725,7 +744,7 @@ BeeperTX started
    字母消息使用 func=3 中文模式，两种模式不可混用。
 5. **FLEX 不支持 GB2312 非中文字符**: GB2312 编码中，中文区域为 0xA1-0xF7(首字节)
    和 0xA1-0xFE(次字节)。非汉字区 (如日文假名、俄文字母) 未测试。
-6. **单帧 FLEX**: 当前只发送单帧消息 (frame 0)，不涉及跨帧拼接。
-7. **异步发射**: `CMD_TRANSMIT` 采用延迟执行模式——发射请求由 `api_dispatch()` 设置标志位，
-   实际的 `Transmitter::send()` 在 `setup()` 之后的 `loop()` 中由 `api_loop()` 调度执行，
+6. **单帧 FLEX (单发)**: 单条消息仍只发单帧 (frame 0)。追码批量 (`FlexEncoder::encodeBatch`) 支持一次 ERS + 连续多帧 (每帧 frame=0), 帧内多地址多消息, v1 仅短地址。
+7. **预编码+异步发射**: `Transmitter::send()` 在调用方上下文 (core 0 / api_loop) 中完成 GB2312 转码和协议编码，
+   编码后的 RAW 数据通过 FreeRTOS 队列提交到 txTask (core 1) 异步发射，
    避免阻塞 AsyncWebServer 的事件循环。

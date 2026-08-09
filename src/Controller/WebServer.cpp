@@ -94,6 +94,20 @@ void WebServer::setupRoutes() {
     onGetLog(req);
   });
 
+  // ---- 扫描 ----
+  m_server.on("/api/sweep/start", HTTP_POST,
+    [](AsyncWebServerRequest*) {},
+    nullptr,
+    [this](AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t, size_t) {
+      onSweepStart(req, data, len);
+    });
+  m_server.on("/api/sweep/stop", HTTP_POST, [this](AsyncWebServerRequest* req) {
+    onSweepStop(req);
+  });
+  m_server.on("/api/sweep/status", HTTP_GET, [this](AsyncWebServerRequest* req) {
+    onSweepStatus(req);
+  });
+
   // ---- CORS (开发调试用) ----
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -146,6 +160,7 @@ String WebServer::configToJson(const TxConfig& cfg) {
   doc["baudRate"]  = cfg.baudRate;
   doc["address"]   = cfg.address;
   doc["txPower"]   = cfg.txPower;
+  doc["mailDrop"]  = cfg.mailDrop;
   doc["message"]   = String(cfg.message);
 
   String out;
@@ -183,6 +198,8 @@ void WebServer::jsonToConfig(const char* json, TxConfig& cfg) {
     cfg.address    = doc["address"].as<uint32_t>();
   if (doc["txPower"].is<uint8_t>() || doc["txPower"].is<const char*>())
     cfg.txPower    = doc["txPower"].as<uint8_t>();
+  if (doc["mailDrop"].is<bool>())
+    cfg.mailDrop   = doc["mailDrop"].as<bool>();
   if (doc["message"].is<const char*>()) {
     String msg = doc["message"].as<String>();
     strncpy(cfg.message, msg.c_str(), sizeof(cfg.message) - 1);
@@ -237,6 +254,7 @@ void WebServer::onPing(AsyncWebServerRequest* req) {
   CmdRequest r; CmdResponse resp;
   memset(&r, 0, sizeof(r));
   r.cmd = CmdID::CMD_PING;
+  r.payloadType = PayloadType::NONE;
   api_dispatch(&r, &resp);
 
   JsonDocument doc;
@@ -250,6 +268,7 @@ void WebServer::onStatus(AsyncWebServerRequest* req) {
   CmdRequest r; CmdResponse resp;
   memset(&r, 0, sizeof(r));
   r.cmd = CmdID::CMD_GET_STATUS;
+  r.payloadType = PayloadType::NONE;
   api_dispatch(&r, &resp);
 
   if (resp.code == RespCode::OK) {
@@ -263,6 +282,7 @@ void WebServer::onConfigGet(AsyncWebServerRequest* req) {
   CmdRequest r; CmdResponse resp;
   memset(&r, 0, sizeof(r));
   r.cmd = CmdID::CMD_GET_CONFIG;
+  r.payloadType = PayloadType::NONE;
   api_dispatch(&r, &resp);
 
   req->send(200, "application/json", configToJson(resp.config));
@@ -273,8 +293,10 @@ void WebServer::onConfigSet(AsyncWebServerRequest* req, uint8_t* data, size_t le
   CmdRequest getR; CmdResponse getResp;
   memset(&getR, 0, sizeof(getR));
   getR.cmd = CmdID::CMD_GET_CONFIG;
+  getR.payloadType = PayloadType::NONE;
   api_dispatch(&getR, &getResp);
   TxConfig cfg = getResp.config;
+  TxConfig before = cfg;  // 快照, 用于 diff 实际变更字段
 
   // 用 JSON body 覆盖
   String body;
@@ -285,13 +307,35 @@ void WebServer::onConfigSet(AsyncWebServerRequest* req, uint8_t* data, size_t le
   CmdRequest setR; CmdResponse setResp;
   memset(&setR, 0, sizeof(setR));
   setR.cmd = CmdID::CMD_SET_CONFIG;
+  setR.payloadType = PayloadType::SET_CONFIG;
   setR.setConfig = cfg;
   api_dispatch(&setR, &setResp);
 
   if (setResp.code == RespCode::OK) {
-    char logLine[128];
-    snprintf(logLine, sizeof(logLine), "WEB config: freq=%ukHz baud=%d pwr=%d",
-             (unsigned)cfg.freqKHz, cfg.baudRate, cfg.txPower);
+    // 只打印实际变更的字段 (快速连点时日志可读, 不再刷固定 freq/baud/pwr)
+    char logLine[256];
+    size_t pos = 0;
+    pos += snprintf(logLine + pos, sizeof(logLine) - pos, "WEB config:");
+    if (cfg.encoding != before.encoding)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " encoding=%d", (int)cfg.encoding);
+    if (cfg.phase != before.phase)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " phase=%d", (int)cfg.phase);
+    if (cfg.tone != before.tone)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " tone=%d", (int)cfg.tone);
+    if (cfg.msgType != before.msgType)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " msgType=%d", (int)cfg.msgType);
+    if (cfg.freqKHz != before.freqKHz)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " freq=%ukHz", (unsigned)cfg.freqKHz);
+    if (cfg.baudRate != before.baudRate)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " baud=%d", cfg.baudRate);
+    if (cfg.address != before.address)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " addr=%lu", (unsigned long)cfg.address);
+    if (cfg.txPower != before.txPower)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " pwr=%d", cfg.txPower);
+    if (cfg.mailDrop != before.mailDrop)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " mailDrop=%d", cfg.mailDrop ? 1 : 0);
+    if (strcmp(cfg.message, before.message) != 0)
+      pos += snprintf(logLine + pos, sizeof(logLine) - pos, " msg=\"%s\"", cfg.message);
     api_log(logLine);
     req->send(200, "application/json", configToJson(cfg));
   } else {
@@ -307,6 +351,7 @@ void WebServer::onTransmit(AsyncWebServerRequest* req, uint8_t* data, size_t len
   CmdRequest r; CmdResponse resp;
   memset(&r, 0, sizeof(r));
   r.cmd = CmdID::CMD_TRANSMIT;
+  r.payloadType = PayloadType::TRANSMIT_MSG;
 
   // 可选消息覆盖
   if (data && len > 0) {
@@ -342,7 +387,12 @@ void WebServer::onTransmit(AsyncWebServerRequest* req, uint8_t* data, size_t len
     api_log("WEB TX sent");
   } else {
     api_log("WEB TX: FAILED");
-    req->send(400, "application/json", errorJson((int)resp.code, "tx failed"));
+    if (resp.detail == -7) {
+      req->send(400, "application/json",
+                errorJson((int)resp.code, "Message too long for protocol"));
+    } else {
+      req->send(400, "application/json", errorJson((int)resp.code, "tx failed"));
+    }
   }
 }
 
@@ -359,7 +409,9 @@ void WebServer::onReset(AsyncWebServerRequest* req) {
 
 void WebServer::onWifiStatus(AsyncWebServerRequest* req) {
   CmdRequest r; CmdResponse resp;
+  memset(&r, 0, sizeof(r));
   r.cmd = CmdID::CMD_SCAN_WIFI;
+  r.payloadType = PayloadType::NONE;
   api_dispatch(&r, &resp);
 
   if (resp.code == RespCode::OK) {
@@ -371,7 +423,9 @@ void WebServer::onWifiStatus(AsyncWebServerRequest* req) {
 
 void WebServer::onWifiStatusQuick(AsyncWebServerRequest* req) {
   CmdRequest r; CmdResponse resp;
+  memset(&r, 0, sizeof(r));
   r.cmd = CmdID::CMD_GET_WIFI_STATUS;
+  r.payloadType = PayloadType::NONE;
   api_dispatch(&r, &resp);
 
   if (resp.code == RespCode::OK) {
@@ -397,6 +451,7 @@ void WebServer::onWifiSet(AsyncWebServerRequest* req, uint8_t* data, size_t len)
   CmdRequest r; CmdResponse resp;
   memset(&r, 0, sizeof(r));
   r.cmd = CmdID::CMD_SET_WIFI;
+  r.payloadType = PayloadType::WIFI_CRED;
   if (doc["ssid"].is<const char*>()) {
     String s = doc["ssid"].as<String>();
     strncpy(r.wifiCred.ssid, s.c_str(), sizeof(r.wifiCred.ssid) - 1);
@@ -416,19 +471,132 @@ void WebServer::onWifiSet(AsyncWebServerRequest* req, uint8_t* data, size_t len)
 
 void WebServer::onWifiScan(AsyncWebServerRequest* req) {
   CmdRequest r; CmdResponse resp;
+  memset(&r, 0, sizeof(r));
   r.cmd = CmdID::CMD_SCAN_WIFI;
+  r.payloadType = PayloadType::NONE;
   api_dispatch(&r, &resp);
 
   if (resp.code == RespCode::OK) {
-    // 直接返回 String 缓存, 避免 CmdResponse union 512 字节截断
-    req->send(200, "application/json", api_getScanCache());
+    // 拷贝到栈缓冲再发送 (api_getScanCache 不返回内部指针, 线程安全)
+    char scanBuf[4096];
+    api_getScanCache(scanBuf, sizeof(scanBuf));
+    req->send(200, "application/json", scanBuf);
   } else {
     req->send(500, "application/json", "[]");
   }
 }
 
 void WebServer::onGetLog(AsyncWebServerRequest* req) {
+  // 增量拉取: ?after=<seq> 只返回写序号 > seq 的新行 (减少 sweep 高频
+  // 日志下的传输量); 省略 after 或 after=0 全量导出。客户端序号已滚出
+  // 环形窗口时 wrapped=true, 前端需全量重绘。
+  uint32_t after = 0;
+  if (req->hasParam("after")) {
+    after = (uint32_t)strtoul(req->getParam("after")->value().c_str(),
+                              nullptr, 10);
+  }
+
+  bool wrapped = false;
+  uint32_t seq = 0;
   char buf[2048];
-  api_getLog(buf, sizeof(buf));
-  req->send(200, "text/plain", buf);
+  api_getLogAfter(buf, sizeof(buf), after, &seq, &wrapped);
+
+  JsonDocument doc;
+  doc["seq"]     = seq;
+  doc["wrapped"] = wrapped;
+  JsonArray lines = doc["lines"].to<JsonArray>();
+  char* p = buf;
+  while (*p) {
+    char* nl = strchr(p, '\n');
+    if (nl) *nl = '\0';
+    if (*p) lines.add(String(p));  // 跳过空行 (环形槽位无内容)
+    if (!nl) break;
+    p = nl + 1;
+  }
+
+  String out;
+  serializeJson(doc, out);
+  req->send(200, "application/json", out);
+}
+
+// ============================================================
+// 扫描 API 处理器
+// ============================================================
+
+void WebServer::onSweepStart(AsyncWebServerRequest* req, uint8_t* data, size_t len) {
+  uint8_t mode = 0xFF;
+
+  // 解析 JSON body: {"mode":"addr"} 或 {"mode":"freq"}
+  if (data && len > 0) {
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, (char*)data, len);
+    if (!err && doc["mode"].is<const char*>()) {
+      const char* m = doc["mode"];
+      if (strcmp(m, "addr") == 0)      mode = 0;
+      else if (strcmp(m, "freq") == 0) mode = 1;
+    }
+  }
+
+  if (mode > 1) {
+    req->send(400, "application/json",
+              "{\"code\":2,\"detail\":\"mode must be 'addr' or 'freq'\"}");
+    return;
+  }
+
+  // 从当前 TxConfig 填充并启动
+  uint32_t start = 0;
+  int detail = 0;
+  RespCode code = api_sweepStartSimple(mode, &start, &detail);
+
+  if (code == RespCode::OK) {
+    const char* modeName = (mode == 0) ? "addr" : "freq";
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "{\"code\":0,\"mode\":\"%s\",\"start\":%lu}",
+             modeName, (unsigned long)start);
+    req->send(200, "application/json", buf);
+  } else {
+    char buf[128];
+    snprintf(buf, sizeof(buf), "{\"code\":%d,\"detail\":%d}",
+             (int)code, detail);
+    req->send(400, "application/json", buf);
+  }
+}
+
+void WebServer::onSweepStop(AsyncWebServerRequest* req) {
+  CmdRequest r; CmdResponse resp;
+  memset(&r, 0, sizeof(r));
+  r.cmd = CmdID::CMD_SWEEP_STOP;
+  r.payloadType = PayloadType::NONE;
+  api_dispatch(&r, &resp);
+
+  req->send(200, "application/json",
+            "{\"code\":0,\"detail\":\"stopped\"}");
+}
+
+void WebServer::onSweepStatus(AsyncWebServerRequest* req) {
+  CmdRequest r; CmdResponse resp;
+  memset(&r, 0, sizeof(r));
+  r.cmd = CmdID::CMD_SWEEP_STATUS;
+  r.payloadType = PayloadType::NONE;
+  api_dispatch(&r, &resp);
+
+  if (resp.code == RespCode::OK) {
+    char buf[320];
+    snprintf(buf, sizeof(buf),
+             "{\"code\":0,\"running\":%s,\"mode\":%d,"
+             "\"current\":%lu,\"total\":%lu,\"done\":%lu,"
+             "\"batchStart\":%lu,\"batchEnd\":%lu}",
+             resp.sweepStatus.running ? "true" : "false",
+             resp.sweepStatus.mode,
+             (unsigned long)resp.sweepStatus.current,
+             (unsigned long)resp.sweepStatus.total,
+             (unsigned long)resp.sweepStatus.done,
+             (unsigned long)resp.sweepStatus.batchStart,
+             (unsigned long)resp.sweepStatus.batchEnd);
+    req->send(200, "application/json", buf);
+  } else {
+    req->send(500, "application/json",
+              "{\"code\":1,\"detail\":\"status failed\"}");
+  }
 }

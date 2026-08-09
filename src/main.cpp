@@ -7,7 +7,7 @@
 //   main.cpp            — 组装层: 硬件初始化和组件编排
 //   src/Controller/     — 控制层: API 调度 + Transmitter + Web + 串口
 //   src/WiFiManager/    — WiFi AP/STA 管理
-//   lib/Pocsag/         — POCSAG 编码 (含 GB2312 中文)
+//   lib/Pocsag/         — POCSAG 编码
 //   lib/Flex/           — FLEX 编码
 //   lib/si4463/         — Si4463 SPI 射频驱动
 //   lib/Charset/        — UTF-8 → GB2312 转码
@@ -27,8 +27,10 @@
 #include "WiFiManager.h"
 #include "SerialConsole.h"
 #include "WebServer.h"
+#include "Sweeper.h"
 #include <Arduino.h>
 #include <SPI.h>
+#include "esp_task_wdt.h"
 
 // ============================================================
 // 引脚定义
@@ -47,15 +49,19 @@
 // ============================================================
 Transmitter    s_tx(PIN_TX_DATA);
 WiFiManager    s_wifi;
+Sweeper        s_sweeper;
 SerialConsole  s_serial(Serial);
 WebServer*     s_web = nullptr;
 
 // ============================================================
 // Si4463 初始化
 // ============================================================
+static bool g_radioReady = false;    //!< Si4463 可用状态 (降级模式: 失败后后台重试)
+static uint32_t s_radioRetryMs = 0;  //!< 上次重试时间戳
+static const uint32_t RADIO_RETRY_MS = 10000;  //!< 重试间隔
+
 static bool initSi4463() {
-  Si446x_setPins(PIN_CS, PIN_SDN, PIN_NIRQ, PIN_TX_DATA,
-                 PIN_SCLK, PIN_MOSI, PIN_MISO);
+  Si446x_setPins(PIN_CS, PIN_SDN, PIN_NIRQ, PIN_TX_DATA, PIN_SCLK, PIN_MOSI, PIN_MISO);
   pinMode(PIN_TX_DATA, OUTPUT);
   digitalWrite(PIN_TX_DATA, LOW);
 
@@ -65,7 +71,7 @@ static bool initSi4463() {
   Si446x_getInfo(&info);
   if (info.part != 0x4463) {
     Serial.printf("Si4463 init FAILED: expected 0x4463, got 0x%04X\n", info.part);
-    Serial.println("Check wiring & power. System halted.");
+    Serial.println("Check wiring & power.");
     return false;
   }
 
@@ -75,6 +81,26 @@ static bool initSi4463() {
   // 初始频率和功率由 api_init() 中的默认配置决定
   // 通过 api_dispatch 的 SET_CONFIG 命令应用
   return true;
+}
+
+// ============================================================
+// Si4463 后台重试 (loop 调用, 非阻塞) — 硬件故障时不挂死系统
+// ============================================================
+static void printSi4463Info();  // 定义见下 (重试成功后打印诊断)
+
+static void radioRetryTick() {
+  if (g_radioReady) return;
+  uint32_t now = millis();
+  if (now - s_radioRetryMs < RADIO_RETRY_MS) return;
+  s_radioRetryMs = now;
+
+  Serial.println(F("RADIO: retrying Si4463 init..."));
+  if (initSi4463()) {
+    g_radioReady = true;
+    printSi4463Info();
+    api_setRadioReady(true);
+    Serial.println(F("RADIO: online"));
+  }
 }
 
 // ============================================================
@@ -112,11 +138,25 @@ static void printSi4463Info() {
 }
 
 // ============================================================
+// 业务主循环任务 (core 0) — 定义见文件底部 (setup 中创建)
+// ============================================================
+static void loopMainTask(void* arg);
+
+// ============================================================
 // setup
 // ============================================================
 void setup() {
   Serial.begin(115200);
   delay(1000);
+
+  // 发射任务 (txTask, core 1 高优先级) 会在发射期间抢占本任务 (loopTask)。
+  // loopTask 的 Task WDT 订阅在此移除, 喂狗职责由 txTask 接管
+  // (见 Transmitter::txTaskMain); 否则长 POCSAG 帧 (>5s) 会误触 WDT 复位。
+  //
+  // 注意 (权衡): 空闲期无任何任务订阅 Task WDT, loopMainTask 若死锁
+  // 不会被 Task WDT 复位 (仅剩硬件 WDT 兜底)。选择让位给发射期喂狗,
+  // 因发射期任务栈冻结才是实际风险源。
+  esp_task_wdt_delete(NULL);
 
   Serial.println(F("\n"
     "╔══════════════════════════════════════════╗\n"
@@ -128,14 +168,21 @@ void setup() {
   Serial.printf("Chip Revision: %d\n", ESP.getChipRevision());
 
   // ---- 1. Si4463 初始化 ----
-  if (!initSi4463()) {
-    while (1) { delay(1000); }
+  // 失败不挂死系统: 进入降级模式 (WiFi/Web/串口仍可用), 后台每
+  // RADIO_RETRY_MS 自动重试, 成功后自动恢复发射能力。
+  g_radioReady = initSi4463();
+  api_setRadioReady(g_radioReady);
+  if (g_radioReady) {
+    printSi4463Info();
+  } else {
+    Serial.println(F("RADIO: offline — WiFi/Web/串口仍可用; 每 10s 自动重试"));
   }
-  printSi4463Info();
 
   // ---- 2. API 初始化 ----
   api_init();
   api_setTransmitter(&s_tx);
+  s_sweeper.setTransmitter(&s_tx);
+  api_setSweeper(&s_sweeper);
 
   // ---- 3. WiFi 初始化 ----
   Serial.print(F("WiFi: "));
@@ -168,16 +215,40 @@ void setup() {
   api_triggerScan();  // 启动后台 WiFi 扫描, 供 Web 配网使用
   api_log("BeeperTX started");
   Serial.println();
+
+  // ---- 6. 业务主循环 (core 0) ----
+  // txTask 独占 core 1 发射时，若 loop 仍在 core 1 会被饿死。
+  // 迁至 core 0：发射期间 Web/串口/STOP 仍可用。
+  xTaskCreatePinnedToCore(loopMainTask, "loopMain", 10240, nullptr, 1, nullptr, 0);
 }
 
 // ============================================================
-// loop
+// loopMainTask — 业务主循环 (core 0, 优先级 1)
+// ============================================================
+static void loopMainTask(void*) {
+  for (;;) {
+    // Si446x_SERVICE 轮询在 core 1 (Arduino loop), 与 txTask 同核;
+    // AsyncTCP 固定 core 0 (CONFIG_ASYNC_TCP_RUNNING_CORE=0), 其回调
+    // 访问 SPI 时由 Si446x.cpp 的跨核递归锁互斥
+    if (!g_radioReady) {
+      radioRetryTick();  // 射频离线: 后台重试, 不阻塞其余功能
+    }
+    s_wifi.loop();
+    s_serial.loop();
+    api_loop();
+    s_sweeper.loop();  // Sweeper 非阻塞调度
+    vTaskDelay(1);
+  }
+}
+
+// ============================================================
+// loop (Arduino loopTask, core 1) — Si446x 事件轮询
 // ============================================================
 void loop() {
-  Si446x_SERVICE();
-  s_wifi.loop();
-  s_serial.loop();
-  api_loop();
-
-  // Web 服务器由 AsyncWebServer 后台处理, 无需显式 loop()
+  // 业务已迁至 core 0。此处仅轮询 Si446x：ISR 置标志，SPI 处理
+  // 在本核持锁执行，与 txTask 串行，避免跨核 SPI 触发 WDT。
+  if (g_radioReady) {
+    Si446x_SERVICE();
+  }
+  vTaskDelay(2);
 }

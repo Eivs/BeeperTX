@@ -39,6 +39,8 @@
 *.bak
 *.swp
 
+tools/__pycache__/
+
 .pio
 .DS_Store
 .claude
