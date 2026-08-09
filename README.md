@@ -5,21 +5,19 @@
 
 ---
 
-提供 **Web 控制面板**、**串口命令行** 和 **WiFi 配网** 三种交互方式，
-所有控制接口共享同一套 API 命令集。
 
-
-![Web 控制面板](images/webui.png)
 
 ## 功能特性
-
+- 提供 **Web 控制面板**、**串口命令行** 和 **WiFi 配网** 三种交互方式，
+所有控制接口共享同一套 API 命令集。
+![Web 控制面板](images/webui.png)
 - **双协议寻呼编码**: POCSAG（512 / 1200 bps）与 FLEX（1600 / 2400 / 3200 bps），
   发射时按配置自动路由到对应编码器，支持数字、字母与中文消息
 - **中英文混排**: UTF-8 消息自动转 GB2312，借助 `\x0E`(SO) / `\x0F`(SI) 控制字符
   在中英文模式间切换，一条消息内中英文任意混排
 - **宽频覆盖**: 119–1050 MHz，6 个频段自动选择（OUTDIV / CLKGEN_BAND），
   频率、功率动态配置，无需重新编译
-- **单配置兼容 POCSAG / FLEX**: 固定 **±4.5 kHz 2FSK** 调制（WDS `Fdev=4500`,
+- **SI4463 单配置兼容 POCSAG / FLEX**: 固定 **±4.5 kHz 2FSK** 调制（WDS `Fdev=4500`,
   `MOD_type=2`），两种协议共用同一份 Si4463 配置（`radio_config.h`）。
   切换频率走 `Si446x_setFrequencyKHz()`（EZ 频率编程），切换码率走 GPIO0
   bit-bang 定时（`bitTimeUs()`），均即时生效，**无需切换/重载芯片配置**
@@ -35,7 +33,7 @@
   所有接口共享同一套 API 命令集
 - **配置持久化**: `SAVE` 将发射配置写入 NVS（magic+version 校验），重启自动恢复
 - **发射日志**: 环形缓冲实时记录，Web / 串口均可查询
-- **FLEX Mail Drop**: 可选置位 Mail Drop 标志（WebUI 勾选）
+- **FLEX Mail Drop**: 可选置位 Mail Drop 标志
 - **预设管理**: WebUI 使用 LocalStorage 保存 / 加载发射配置预设
 
 ## 硬件连接
@@ -252,6 +250,7 @@ AP 模式下内置 Captive Portal DNS，手机连接后自动弹出配网页面�
      phase=norm|inv     Phase (normal/inverted)
      tone=a|b|c|d       POCSAG tone
      msgType=num|alpha  Numeric / Alphanumeric
+     mailDrop=0|1       FLEX Mail Drop flag (ALPHA only)
      msg=<text>         Message content (UTF-8)
   TX [msg=<text>]       Transmit once (optional msg override)
   SWEEP [START] addr|freq [encoding=pocsag|flex] [baud=<rate>]
@@ -340,6 +339,7 @@ OK CONFIG encoding=pocsag phase=norm tone=D msgType=alpha freq=152675kHz pwr=127
 | `phase` | `norm` / `inv` | `phase=inv` |
 | `tone` | `a` / `b` / `c` / `d` | `tone=c` |
 | `msgType` | `num` / `alpha` | `msgType=num` |
+| `mailDrop` | `0` / `1` (仅 FLEX ALPHA 生效) | `mailDrop=1` |
 | `msg` | UTF-8 文本（可含空格） | `msg=测试消息` |
 
 **注意**: `SET` 会立即将频率和功率应用到 Si4463 硬件，其他参数缓存到内存。修改后的配置不会自动持久化，需执行 `SAVE` 写入 NVS。
@@ -355,6 +355,21 @@ OK CONFIG encoding=pocsag phase=norm tone=D msgType=alpha freq=153950kHz pwr=127
 > SET encoding=flex msgType=num addr=2100001
 OK SET
 ```
+
+#### `SET mailDrop=1` — FLEX Mail Drop 消息
+
+Mail Drop 标志仅 FLEX 字母消息 (ALPHA) 生效，置位消息首字 bit20，触发寻呼机的
+Mail Drop 提示行为。设置后 `TX` 发送即为 Mail Drop 消息：
+
+```
+> SET encoding=flex mailDrop=1 msg=重要通知
+OK SET
+> TX
+OK TX count=0
+```
+
+> `mailDrop=0` 恢复普通消息。POCSAG 无 Mail Drop 概念，该标志不影响 POCSAG 发射。
+> 也可通过 REST API 设置: `POST /api/config` body 含 `"mailDrop":true`。
 
 参数无效时返回错误码：
 

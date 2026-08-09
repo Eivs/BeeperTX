@@ -118,6 +118,7 @@ void SerialConsole::printHelp() {
     "     phase=norm|inv     Phase (normal/inverted)\n"
     "     tone=a|b|c|d       POCSAG tone\n"
     "     msgType=num|alpha  Numeric / Alphanumeric\n"
+    "     mailDrop=0|1       FLEX Mail Drop flag (ALPHA only)\n"
     "     msg=<text>         Message content (UTF-8)\n"
     "  TX [msg=<text>]       Transmit once (optional msg override)\n"
     "  SWEEP [START] addr|freq [encoding=pocsag|flex] [baud=<rate>]\n"
@@ -266,6 +267,9 @@ void SerialConsole::cmdSet(const char* args) {
     else if (strcasecmp(key, "msgType") == 0) {
       cfg.msgType = (strcasecmp(val, "num") == 0)
                     ? MsgType::NUMERIC : MsgType::ALPHANUMERIC;
+    }
+    else if (strcasecmp(key, "mailDrop") == 0) {
+      cfg.mailDrop = (atoi(val) != 0);  // FLEX Mail Drop (仅 ALPHA 生效)
     }
     else if (strcasecmp(key, "msg") == 0) {
       strncpy(cfg.message, val, sizeof(cfg.message) - 1);
