@@ -1,5 +1,8 @@
 # POCSAG Encoding
 
+> 本文从**实现**角度介绍本项目的 POCSAG 编码模块。协议本身的介绍见
+> [docs/POCSAG_PROTOCOL.md](../POCSAG_PROTOCOL.md)。
+
 ## 模块概述
 
 `PocsagEncoder` 是 POCSAG（Post Office Code Standardisation Advisory Group）寻呼协议的软件编码器。它负责把文本消息、寻呼地址和功能码转换为符合 POCSAG 物理层格式的 32-bit 基带码字序列，供后续 FSK 调制发射。
