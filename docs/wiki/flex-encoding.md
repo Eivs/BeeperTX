@@ -2,6 +2,9 @@
 
 # FLEX Encoding 模块文档
 
+> 本文从**实现**角度介绍本项目的 FLEX 编码模块。协议本身的介绍（传输结构、
+> 码字格式、同步机制、地址/向量/消息编码）见 [docs/FLEX_PROTOCOL.md](../FLEX_PROTOCOL.md)。
+
 ## 概述
 
 FLEX Encoding 模块提供 FLEX 无线寻呼协议（1600 bps / 2-FSK）的编码能力，支持 Alphanumeric（ASCII）、Numeric、Tone-only 三种消息类型，以及单帧、批量追码两种传输模式。

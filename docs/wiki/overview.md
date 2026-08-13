@@ -59,7 +59,7 @@ flowchart TD
 
 **控制面（Core 0）** — [Controller Services & Interfaces](controller-services-and-interfaces.md) 是系统“控制面”核心：统一命令协议、`CommandDispatcher` 调度、参数校验、NVS 配置持久化（`ConfigStore`）、发射日志环形缓冲（`LogRingBuffer`）、异步请求队列（`TxQueue`）。设计上刻意取消模块级单例，组件依赖全部通过构造注入。交互入口方面，[Web Frontend](web-frontend.md) 是运行在浏览器中的控制面板；[WiFi Manager](wifi-manager.md) 负责 STA 自动连接、断线自愈与 AP 配网（热点名 `BeeperTX`，DNS 劫持实现 Captive Portal），是代码库中完全自包含的组件。
 
-**编码层（Core 0）** — [POCSAG Encoding](pocsag-encoding.md) 与 [FLEX Encoding](flex-encoding.md) 分别实现两种协议的基带编码。协议本身的介绍（传输结构、码字格式、差错控制、消息编码）见 [POCSAG 协议文档](../POCSAG_PROTOCOL.md)。中文消息先经 [Character Set Conversion](character-set-conversion.md) 的 `U2GB` 类从 UTF-8 映射到 GB2312，再插入 SO/SI 控制字符。POCSAG 侧输出 32-bit 码字序列（含 576-bit 前导码、地址/功能码字与 BCH 校验）；FLEX 侧完成 BCH 校验、位序反转、块交织与帧/同步头组装。
+**编码层（Core 0）** — [POCSAG Encoding](pocsag-encoding.md) 与 [FLEX Encoding](flex-encoding.md) 分别实现两种协议的基带编码。协议本身的介绍（传输结构、码字格式、差错控制、消息编码）见 [POCSAG 协议文档](../POCSAG_PROTOCOL.md) 与 [FLEX 协议文档](../FLEX_PROTOCOL.md)。中文消息先经 [Character Set Conversion](character-set-conversion.md) 的 `U2GB` 类从 UTF-8 映射到 GB2312，再插入 SO/SI 控制字符。POCSAG 侧输出 32-bit 码字序列（含 576-bit 前导码、地址/功能码字与 BCH 校验）；FLEX 侧完成 BCH 校验、位序反转、块交织与帧/同步头组装。
 
 **发射层（Core 0 调度 / Core 1 执行）** — [Sweep & Transmission](sweep-and-transmission.md) 包含 `Sweeper`（追码/追频状态机，跑在 Core 0 业务主循环）与 `Transmitter`（统一发射控制器，txTask 独占 Core 1）。编码后的基带数据经 FreeRTOS 队列到达 txTask，由 txTask 在 GPIO0 上精确位敲击，直接对 Si4463 做 FSK 调制（不经过 FIFO）。
 
