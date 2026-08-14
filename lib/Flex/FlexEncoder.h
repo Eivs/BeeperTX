@@ -86,6 +86,10 @@ public:
   /** FLEX 缓冲区大小: 单帧 800 B; 批量 55 地址 ALPHA 批 1920 B, 留余量 */
   static constexpr size_t BUFFER_SIZE = 2048;
 
+  /** FLEX 字母消息最大字符数 (7-bit, 1600 bps 单帧)。
+   *  与 flex.h MAX_CHARS_ALPHA 一致: (88 字/帧 - 4) * 3 - 4 = 248。 */
+  static constexpr size_t MAX_ALPHA_CHARS = 248;
+
   /** 批量消息上限 (与 Sweeper FLEX_BATCH_SIZE 一致, 55 地址 ALPHA 批 4 帧) */
   static constexpr size_t MAX_BATCH_MSGS = 55;
 

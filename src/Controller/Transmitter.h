@@ -38,7 +38,7 @@ public:
     int          baudRate   = 1200;
     ToneType     tone       = ToneType::TONE_A;
     uint64_t     address    = 1000;
-    char         message[256] = "";
+    char         message[1024] = "";
     MsgType      msgType    = MsgType::ALPHANUMERIC;
     bool         mailDrop   = false;  //!< FLEX Mail Drop 标志 (仅 ALPHA 生效)
   };
@@ -73,11 +73,24 @@ public:
   void clearAbort() { m_abort = false; }
 
   /**
-   * @brief 上次 send() 是否因编码失败返回 false (区别于队列满)。
-   *        编码失败 (如地址 0 非法 capcode) 是确定性错误, 重试不会成功,
-   *        调用方 (API loop) 应丢弃而非无限重试。
+   * @brief 编码失败原因 (区分不可重试错误)
    */
-  bool lastEncodeError() const { return m_lastEncodeError; }
+  enum class EncodeFailReason : uint8_t {
+    NONE        = 0,  //!< 无错误
+    INVALID_ADDR = 1, //!< 非法地址 (如 capcode 0)
+    MSG_TOO_LONG = 2, //!< 消息超长 (超出协议单帧/单次容量)
+    OTHER        = 3, //!< 其他编码错误
+  };
+
+  /**
+   * @brief 上次 send() 是否因编码失败返回 false (区别于队列满)。
+   */
+  bool lastEncodeError() const { return m_lastEncodeReason != EncodeFailReason::NONE; }
+
+  /**
+   * @brief 上次编码失败的具体原因。
+   */
+  EncodeFailReason lastEncodeReason() const { return m_lastEncodeReason; }
 
   // ---- 静态工具 ----
   static int bitTimeUs(int baudRate);
@@ -88,10 +101,13 @@ private:
   int  m_txCount = 0;
 
   // FLEX 中英混排控制字符缓冲 (实例成员, 非 static)
-  uint8_t m_flexMixed[512];
+  uint8_t m_flexMixed[1024];
 
   // POCSAG 单次发送预编码器 (实例成员, 避免 ~6KB 栈分配)
   PocsagEncoder m_pocsagEncoder;
+
+  // FLEX 单次发送预编码器 (实例成员, 避免 ~2KB 栈分配)
+  FlexEncoder m_flexEncoder;
 
   // ---- 后台发射任务 (core 1) ----
   enum class JobType : uint8_t {
@@ -116,7 +132,7 @@ private:
   TaskHandle_t  m_task  = nullptr;
   volatile bool m_txActive = false;
   volatile bool m_abort    = false;
-  bool m_lastEncodeError = false;  //!< 最近一次 send() 是否编码失败 (确定性, 不重试)
+  EncodeFailReason m_lastEncodeReason = EncodeFailReason::NONE; //!< 最近一次 send() 编码失败原因
 
   bool ensureTask();
   static void txTaskEntry(void* arg);

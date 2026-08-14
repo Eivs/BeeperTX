@@ -90,7 +90,7 @@ struct TxConfig {
   uint32_t     address   = 1000;         // POCSAG: 1–2097151, FLEX: CAPCODE
   uint8_t      txPower   = 127;          // PA 功率 0–127 (127=+20dBm)
   bool         mailDrop  = false;        // FLEX Mail Drop 标志 (仅 ALPHA 生效)
-  char         message[256];             // UTF-8 消息, 最大 255 字节
+  char         message[1024];            // UTF-8 消息, 最大 1023 字节
 };
 
 // ============================================================
@@ -158,7 +158,7 @@ struct CmdRequest {
 
     // CMD_TRANSMIT:         若 message[0] != '\0' 则覆盖当前消息
     //                      否则发射已配置的消息
-    char transmitMsg[256];
+    char transmitMsg[1024];
 
     // CMD_SET_WIFI:         WiFi 凭据
     struct {

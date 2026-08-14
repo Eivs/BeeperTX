@@ -165,11 +165,11 @@ void Transmitter::sendBytes(const uint8_t* data, size_t len, int bitTimeUs, bool
 // ============================================================
 bool Transmitter::send(const Config& cfg) {
   clearAbort();
-  m_lastEncodeError = false;
+  m_lastEncodeReason = EncodeFailReason::NONE;
 
   // ---- FLEX: 预编码 → sendFlexRaw ----
   if (cfg.encoding == EncodingType::FLEX) {
-    FlexEncoder encoder;
+    FlexEncoder& encoder = m_flexEncoder; // 实例成员, 避免 ~2KB 栈分配
     size_t len = 0;
     bool isNum = (cfg.msgType == MsgType::NUMERIC);
 
@@ -192,14 +192,27 @@ bool Transmitter::send(const Config& cfg) {
         }
       }
       mixed[m] = '\0';
+
+      // FLEX 单帧最多 MAX_ALPHA_CHARS 个 7-bit 字符，超长直接拒绝。
+      // 不静默截断：截断点可能落在 GB2312 双字节对中间导致乱码。
+      {
+        size_t mixedLen = strlen((const char*)mixed);
+        if (mixedLen > FlexEncoder::MAX_ALPHA_CHARS) {
+          Serial.printf("FLEX msg too long: %u > %u chars (max), rejected\n",
+                        (unsigned)mixedLen, (unsigned)FlexEncoder::MAX_ALPHA_CHARS);
+          m_lastEncodeReason = EncodeFailReason::MSG_TOO_LONG;
+          return false;
+        }
+      }
+
       len = encoder.encode(cfg.address, (const char*)mixed, FlexEncoder::ALPHA,
                            cfg.mailDrop);
     }
 
     if (encoder.hasError()) {
       Serial.printf("FLEX encode error: %s\n", encoder.getErrorString());
-      // 不计数: 实际未发射 (与 POCSAG 路径一致 — 成功才在 impl 里 +1)
-      m_lastEncodeError = true;  // 编码失败是确定性错误, 调用方不应重试
+      // 编码错误是确定性错误, 调用方不应重试 (如地址 0 非法 capcode)
+      m_lastEncodeReason = EncodeFailReason::OTHER;
       return false;
     }
     // 设置以寻呼机为参照: NORMAL=寻呼机正相, 内部取反位流以补偿
@@ -222,6 +235,14 @@ bool Transmitter::send(const Config& cfg) {
     gbStr = GB.get(String(cfg.message));
     dataLen = gbStr.length();
     data = (const uint8_t*)gbStr.c_str();
+
+    // POCSAG MAX_MESSAGE_LEN=1024, 超长拒绝 (否则编码器会静默截断/溢出)
+    if (dataLen > MAX_MESSAGE_LEN) {
+      Serial.printf("POCSAG msg too long: %u > %u bytes (max), rejected\n",
+                    (unsigned)dataLen, (unsigned)MAX_MESSAGE_LEN);
+      m_lastEncodeReason = EncodeFailReason::MSG_TOO_LONG;
+      return false;
+    }
   }
 
   DisplayMode dm = (cfg.msgType == MsgType::NUMERIC) ? MODE_NUMERIC : MODE_ALPHANUMERIC;

@@ -387,7 +387,12 @@ void WebServer::onTransmit(AsyncWebServerRequest* req, uint8_t* data, size_t len
     api_log("WEB TX sent");
   } else {
     api_log("WEB TX: FAILED");
-    req->send(400, "application/json", errorJson((int)resp.code, "tx failed"));
+    if (resp.detail == -7) {
+      req->send(400, "application/json",
+                errorJson((int)resp.code, "Message too long for protocol"));
+    } else {
+      req->send(400, "application/json", errorJson((int)resp.code, "tx failed"));
+    }
   }
 }
 

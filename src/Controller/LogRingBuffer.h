@@ -6,7 +6,7 @@
 /**
  * @brief 发射日志环形缓冲区 (线程安全, ISR/任意任务可写)。
  *
- * 从 API.cpp 抽出, 与命令调度解耦。固定容量 (50 行 × 128 字节),
+ * 从 API.cpp 抽出, 与命令调度解耦。固定容量 (50 行 × 512 字节),
  * 满时覆盖最旧条目。由 portMUX 保护, 可在中断上下文调用 add()。
  *
  * 每条日志附带单调递增的写序号 (m_seq), 支持增量导出:
@@ -17,7 +17,7 @@
 class LogRingBuffer {
 public:
   static const int MAX_LINES = 50;
-  static const int LINE_LEN  = 128;
+  static const int LINE_LEN  = 512;
 
   /** 追加一行 (自动截断到 LINE_LEN-1) */
   void add(const char* line);

@@ -412,6 +412,7 @@ body.terminal {
 .cfg-group label.form-check input[type="checkbox"] {
   accent-color: var(--primary);
   cursor: pointer;
+  width: auto;
 }
 
 /* ---- Responsive ---- */

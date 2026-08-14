@@ -2,7 +2,7 @@
  * @file    API.cpp
  * @brief   命令调度器实现 — CommandDispatcher + C 接口薄封装
  *
- * 架构 (2026-07 重构, 消除全局单例 Service Locator):
+ * 消除全局单例 Service Locator:
  *   - CommandDispatcher : 命令分发 + 状态持有 (配置/状态缓存/发射计数)
  *   - ConfigStore       : TxConfig 的 NVS 持久化 (CMD_SAVE_CONFIG)
  *   - LogRingBuffer     : 发射日志环形缓冲区
@@ -21,6 +21,8 @@
 #include "ConfigStore.h"
 #include "LogRingBuffer.h"
 #include "TxQueue.h"
+#include "FlexEncoder.h"
+#include "Pocsag.h"
 #include <Arduino.h>
 #include <cstring>
 
@@ -366,6 +368,29 @@ void CommandDispatcher::handleTransmit(const CmdRequest* req, CmdResponse* resp)
     resp->cmd = CmdID::CMD_TRANSMIT; resp->code = RespCode::ERR_PARAM;
     resp->detail = -6;
     return;
+  }
+
+  // 消息长度预检 (轻量: 仅 UTF-8 strlen, 不调 GB.get 避免栈/堆压力)
+  // GB2312 字节数 ≤ UTF-8 字节数 (中文 3→2), 因此 strlen 是安全的上界。
+  // 精确限制由 Transmitter::send() 在编码时二次校验。
+  {
+    const char* msg = (req->transmitMsg[0] != '\0') ? req->transmitMsg : m_config.message;
+    size_t len = strlen(msg);
+    if (m_config.encoding == EncodingType::FLEX &&
+        m_config.msgType != MsgType::NUMERIC) {
+      if (len > FlexEncoder::MAX_ALPHA_CHARS) {
+        resp->cmd = CmdID::CMD_TRANSMIT; resp->code = RespCode::ERR_PARAM;
+        resp->detail = -7;
+        return;
+      }
+    } else if (m_config.encoding == EncodingType::POCSAG &&
+               m_config.msgType == MsgType::ALPHANUMERIC) {
+      if (len > MAX_MESSAGE_LEN) {
+        resp->cmd = CmdID::CMD_TRANSMIT; resp->code = RespCode::ERR_PARAM;
+        resp->detail = -7;
+        return;
+      }
+    }
   }
 
   if (!m_queue.setPendingTx(req->transmitMsg)) {
@@ -731,9 +756,9 @@ void CommandDispatcher::loop() {
   }
 
   // 待发射的单次 TX (非阻塞: 由主循环执行)
-  char pendingMsg[256];
+  char pendingMsg[1024];
   if (m_queue.consumePendingTx(pendingMsg, sizeof(pendingMsg)) && m_tx) {
-    char savedMsg[256] = {0};
+    char savedMsg[1024] = {0};
     bool msgOverride = (pendingMsg[0] != '\0');
     if (msgOverride) {
       strncpy(savedMsg, m_config.message, sizeof(savedMsg) - 1);
@@ -745,7 +770,7 @@ void CommandDispatcher::loop() {
       const char* encName = (m_config.encoding == EncodingType::POCSAG) ? "POCSAG" : "FLEX";
       const char* phName  = (m_config.phase == PhaseType::NORMAL) ? "NRM" : "INV";
       const char* tpName  = (m_config.msgType == MsgType::NUMERIC) ? "NUM" : "ALPHA";
-      char buf[256];
+      char buf[1024];
       char toneL = "ABCD"[(uint8_t)m_config.tone & 3];
       snprintf(buf, sizeof(buf),
                "TX> %s %s %s addr=%lu freq=%ukHz baud=%u pw=%u tone=%c \"%s\"",
@@ -762,12 +787,17 @@ void CommandDispatcher::loop() {
     if (m_tx->send(makeTxConfig())) {
       m_txCount++;
     } else if (m_tx->lastEncodeError()) {
-      // 编码失败 (如地址 0 非法 capcode): 确定性错误, 重试不会成功,
-      // 丢弃防无限重试风暴 (原实现一律当队列满 → setPendingTx 无限循环刷日志)
       if (msgOverride) {
         strncpy(m_config.message, savedMsg, sizeof(m_config.message) - 1);
       }
-      log("TX dropped (encode failed)");
+      if (m_tx->lastEncodeReason() == Transmitter::EncodeFailReason::MSG_TOO_LONG) {
+        if (m_config.encoding == EncodingType::FLEX)
+          log("TX rejected: message too long (FLEX max 248 chars per frame)");
+        else
+          log("TX rejected: message too long (POCSAG max ~1400 chars)");
+      } else {
+        log("TX dropped (encode failed)");
+      }
       return;
     } else {
       // 队列满 (可能 Sweeper 占用): 恢复消息并重新挂起待发射, 下帧重试

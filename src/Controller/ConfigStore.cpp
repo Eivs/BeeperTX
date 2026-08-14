@@ -7,7 +7,7 @@ namespace {
 const char*  NVS_NS      = "beepertx";   //!< NVS 命名空间 (与 WiFiManager 分离)
 const char*  NVS_KEY     = "txcfg";      //!< 配置 blob 键
 const uint32_t MAGIC     = 0x42545831;   //!< "BTX1"
-const uint16_t VERSION   = 1;            //!< 布局版本
+const uint16_t VERSION   = 2;            //!< 布局版本 (v2: message[256]→[1024])
 
 /** 落盘布局 (固定大小, 保证 getBytes 读取完整) */
 struct PersistedConfig {

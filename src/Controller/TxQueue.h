@@ -78,7 +78,7 @@ private:
   portMUX_TYPE m_pendingMux = portMUX_INITIALIZER_UNLOCKED;
 
   bool   m_pendingTx = false;
-  char   m_pendingTxMsg[256] = {0};
+  char   m_pendingTxMsg[1024] = {0};
 
   bool   m_pendingScan = false;
   char   m_scanCache[SCAN_CACHE_MAX] = "[]";   // 固定缓冲 (临界区保护)
