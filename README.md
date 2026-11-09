@@ -1,235 +1,266 @@
-# BeeperTX — ESP32-S3 + Si4463 POCSAG / FLEX 寻呼发射机
+# BeeperTX — ESP32-S3 + Si4463 POCSAG / FLEX Pager Transmitter
 
-基于 ESP32-S3 + Si4463 的双协议寻呼发射机，支持 POCSAG 和 FLEX 两种编码，
-通过 GB2312 汉字字符集 + 控制字符实现中英文混排消息传输。
+A dual-protocol pager transmitter built on the ESP32-S3 and the Si4463 sub-GHz
+transceiver. It speaks both **POCSAG** and **FLEX**, and delivers mixed
+Chinese/English messages by combining the GB2312 character set with the
+`\x0E` / `\x0F` shift control characters used by Chinese pager firmware.
+
+**English** | [简体中文](README.zh-CN.md)
 
 ---
 
 
 
-## 功能特性
-- 提供 **Web 控制面板**、**串口命令行** 和 **WiFi 配网** 三种交互方式，
-所有控制接口共享同一套 API 命令集。
-![Web 控制面板](images/webui.png)
-- **双协议寻呼编码**: POCSAG（512 / 1200 bps）与 FLEX（1600 / 2400 / 3200 bps），
-  发射时按配置自动路由到对应编码器，支持数字、字母与中文消息
-- **中英文混排**: UTF-8 消息自动转 GB2312，借助 `\x0E`(SO) / `\x0F`(SI) 控制字符
-  在中英文模式间切换，一条消息内中英文任意混排
-- **宽频覆盖**: 119–1050 MHz，6 个频段自动选择（OUTDIV / CLKGEN_BAND），
-  频率、功率动态配置，无需重新编译
-- **SI4463 单配置兼容 POCSAG / FLEX**: 固定 **±4.5 kHz 2FSK** 调制（WDS `Fdev=4500`,
-  `MOD_type=2`），两种协议共用同一份 Si4463 配置（`radio_config.h`）。
-  切换频率走 `Si446x_setFrequencyKHz()`（EZ 频率编程），切换码率走 GPIO0
-  bit-bang 定时（`bitTimeUs()`），均即时生效，**无需切换/重载芯片配置**
-- **直接调制 (Direct TX)**: GPIO0 bit-bang 直接 FSK 调制（非 FIFO），
-  由独立 txTask 独占 Core 1 发射，时序精确
-- **异步发射架构**: Core 0 预编码 → FreeRTOS 队列 → txTask（Core 1）位敲击，
-  不阻塞 AsyncWebServer 事件循环，发射期间 Web/串口保持响应
-- **追码 / 追频 (Sweeper)**: 地址扫描（POCSAG 单前导码批量、FLEX 一次 ERS 多帧）
-  与频率扫描，非阻塞状态机，WebUI / 串口 / REST API 均可控制
-- **批量编码加速**: POCSAG 单前导码跨 SYNC 连续多 Batch；FLEX 一次 ERS 连续多帧、
-  帧内多地址多消息（约 23x 提速）
-- **三种交互方式**: Web 控制面板（SPA）、串口命令行、WiFi 配网，
-  所有接口共享同一套 API 命令集
-- **配置持久化**: `SAVE` 将发射配置写入 NVS（magic+version 校验），重启自动恢复
-- **发射日志**: 环形缓冲实时记录，Web / 串口均可查询
-- **FLEX Mail Drop**: 可选置位 Mail Drop 标志
-- **预设管理**: WebUI 使用 LocalStorage 保存 / 加载发射配置预设
+## Features
 
-## 硬件连接
+- **Three control surfaces**: a **web control panel**, a **serial command line**
+  and **WiFi provisioning**, all sharing one API command set.
+  ![Web control panel](images/webui.png)
+- **Dual-protocol pager encoding**: POCSAG (512 / 1200 bps) and FLEX
+  (1600 / 2400 / 3200 bps). Transmissions are routed to the matching encoder
+  automatically; numeric, alphanumeric and Chinese messages are supported.
+- **Mixed Chinese/English**: UTF-8 input is converted to GB2312 on device and
+  switched between Chinese and ASCII modes with the `\x0E` (SO) / `\x0F` (SI)
+  control characters, so a single message can freely mix both.
+- **Wide frequency coverage**: 119–1050 MHz with automatic band selection
+  (OUTDIV / CLKGEN_BAND). Frequency and power are configurable at runtime with
+  no recompilation.
+- **One Si4463 config for both protocols**: a fixed **±4.5 kHz 2FSK**
+  modulation (WDS `Fdev=4500`, `MOD_type=2`) shared by POCSAG and FLEX through a
+  single `radio_config.h`. Frequency changes go through
+  `Si446x_setFrequencyKHz()` (EZ frequency programming) and bit-rate changes go
+  through GPIO0 bit-bang timing (`bitTimeUs()`); both take effect immediately,
+  with **no chip reconfiguration or reload**.
+- **Direct TX mode**: GPIO0 bit-bangs the FSK data stream (no FIFO). A dedicated
+  `txTask` owns Core 1 for precise timing.
+- **Asynchronous transmit architecture**: Core 0 pre-encodes → FreeRTOS queue →
+  `txTask` (Core 1) bit-bangs. The AsyncWebServer event loop is never blocked, so
+  web and serial stay responsive during transmission.
+- **Address / frequency scanning (Sweeper)**: batch address scanning (POCSAG with
+  a single preamble, FLEX with one ERS carrying multiple frames) and frequency
+  stepping, implemented as a non-blocking state machine controllable from the
+  WebUI, the serial console or the REST API.
+- **Batch encoding speedup**: POCSAG packs multiple batches across SYNC under one
+  preamble; FLEX packs multiple frames and multiple addresses per frame under one
+  ERS (roughly a 23x speedup).
+- **Configuration persistence**: `SAVE` writes the transmit configuration to NVS
+  (magic + version checked) and it is restored on boot.
+- **TX log ring buffer**: transmissions are recorded in a ring buffer and can be
+  queried from the web UI or the serial console.
+- **FLEX Mail Drop**: optional Mail Drop flag for ALPHA messages.
+- **Presets**: the web UI stores and restores transmit presets in LocalStorage.
 
-### 引脚映射
+## Hardware
 
-| ESP32-S3 | → | Si4463 | 功能 |
+### Pinout
+
+| ESP32-S3 | → | Si4463 | Function |
 |:---|---:|:---|---:|
-| **GPIO16** | → | **GPIO0** | **TX 数据线 (Direct Mode)** |
-| GPIO5 | → | SDN | 关断控制 |
-| GPIO10 | → | nSEL | SPI 片选 |
+| **GPIO16** | → | **GPIO0** | **TX data (Direct Mode)** |
+| GPIO5 | → | SDN | Shutdown control |
+| GPIO10 | → | nSEL | SPI chip select |
 | GPIO11 | → | SDI | SPI MOSI |
-| GPIO12 | → | SCLK | SPI 时钟 |
+| GPIO12 | → | SCLK | SPI clock |
 | GPIO13 | ← | SDO | SPI MISO |
-| GPIO4 | ← | nIRQ | 中断输出 (低有效, 可选: 固件 `PIN_NIRQ=-1` 轮询模式, 不接亦可) |
-| 3V3 | → | VDD | 电源 (3.3V) |
-| GND | → | GND | 共地 |
+| GPIO4 | ← | nIRQ | Interrupt output (active low; optional — firmware runs `PIN_NIRQ=-1` in polling mode) |
+| 3V3 | → | VDD | Power (3.3V) |
+| GND | → | GND | Common ground |
 
-> 注: GPIO4 → nIRQ 为可选连接。当前固件在 ESP32 上使用**轮询模式**
-> (`PIN_NIRQ = -1`, 见 `src/main.cpp`), 不依赖中断引脚; 接了不会冲突。
+> Note: GPIO4 → nIRQ is optional. The current firmware uses **polling mode**
+> (`PIN_NIRQ = -1`, see `src/main.cpp`) and does not rely on the interrupt pin.
+> Connecting it is harmless.
 
-### RF 天线开关 (可选)
+### RF antenna switch (optional)
 
-仅在使用单天线半双工设计（射频开关切换收发）时才需要以下接线；
-使用收发分体天线或无开关的模块（如本项目的直连天线）可跳过此节。
+Only needed for a single-antenna half-duplex design where an RF switch toggles
+between TX and RX. Skip this section if you use separate TX/RX antennas or a
+module with no switch (which is how this project is wired).
 
-**此功能不需要 ESP32 引脚参与。** 固件通过 SPI `GPIO_PIN_CFG` 命令
-（`Si446x_configRFswitch()`, 见 `src/main.cpp`）将 **Si4463 芯片的 GPIO2/GPIO3**
-配置为状态输出，直接驱动外部 RF 开关：
+**No ESP32 pin is involved.** The firmware uses the SPI `GPIO_PIN_CFG` command
+(`Si446x_configRFswitch()`, see `src/main.cpp`) to configure **Si4463 GPIO2 /
+GPIO3** as state outputs that drive an external RF switch directly:
 
-| Si4463 引脚 | 模式 | TX 时 | RX 时 |
-|-------------|------|-------|-------|
+| Si4463 pin | Mode | During TX | During RX |
+|-----------|------|-----------|-----------|
 | GPIO2 | TX_STATE (0x21) | HIGH | LOW |
 | GPIO3 | RX_STATE (0x20) | LOW | HIGH |
 
-> Si4463 芯片侧引脚分配: GPIO0 = Direct TX 数据输入（见引脚映射）,
-> GPIO1 = TX_DATA_CLK（外部数据源同步用, 本项目未使用）,
-> GPIO2/GPIO3 = 上述 RF 开关状态输出。这些引脚**不接 ESP32**,
-> 若未连接任何 RF 开关则全部悬空即可。
+> Si4463-side pin usage: GPIO0 = Direct TX data input (see the pinout),
+> GPIO1 = TX_DATA_CLK (external data-source clock, unused here),
+> GPIO2/GPIO3 = the RF switch state outputs above. These pins are **not**
+> connected to the ESP32; if no RF switch is used, leave them floating.
 
-### 频率范围
+### Frequency range
 
-119–1050 MHz (6 个频段，自动选择 OUTDIV / CLKGEN_BAND)。
-通过 Web 面板或 API 命令动态配置（默认 152675 kHz）。
+119–1050 MHz (6 bands, automatic OUTDIV / CLKGEN_BAND selection). Configurable at
+runtime from the web panel or via API commands (default `152675` kHz).
 
 ---
 
 > [!WARNING]
-> **无线电法规与使用注意事项**
+> **Radio regulations and safe use**
 >
-> 本设备是射频发射机，**请务必遵守当地无线电管理部门的法律法规**：
+> This device is an RF transmitter. **You must comply with the radio regulations
+> of your jurisdiction.**
 >
-> - **频率授权**: 本设备支持 119–1050 MHz 全频段发射。该范围内的多数频率（如寻呼频段、
->   航空、应急通信等）为**授权频段**，未经许可发射属于违法行为。
->   发射前请确认目标频率已获得当地无线电管理部门（中国大陆: 工信部无线电管理局 /
->   各地无线电管理机构; 其他地区: FCC、ETSI、OFCOM 等）的授权或许可证。
-> - **功率限制**: 注意当地法规对发射功率、占空比和谐波辐射的限制，超过限值可能干扰
->   其他合法业务并面临处罚。
-> - **用途限制**: 本项目仅供**学习、研究和实验**使用，请勿用于未经授权的商业寻呼业务
->   或其他非法用途。
-> - **天线与辐射**: 合理选择天线并注意射频辐射安全，避免长时间近距离接触工作中的天线。
-> - **责任承担**: 使用本设备产生的任何法律后果由使用者自行承担，项目作者不对
->   违规使用行为负责。
+> - **Frequency authorization**: the device can transmit anywhere in
+>   119–1050 MHz. Most frequencies in that range (paging bands, aeronautical,
+>   emergency services, …) are **licensed bands**, and transmitting without a
+>   licence is illegal. Before transmitting, confirm that the target frequency is
+>   authorized by your regulator (in mainland China: MIIT Radio Management
+>   Bureau / local radio management offices; elsewhere: FCC, ETSI, OFCOM, …).
+> - **Power limits**: observe local limits on transmit power, duty cycle and
+>   spurious emissions. Exceeding them can interfere with licensed services and
+>   lead to penalties.
+> - **Intended use**: this project is for **study, research and experimentation
+>   only**. Do not use it for unlicensed commercial paging or any other illegal
+>   purpose.
+> - **Antennas and exposure**: choose an appropriate antenna and respect RF
+>   exposure safety — avoid prolonged close contact with a transmitting antenna.
+> - **Liability**: any legal consequences arising from the use of this device are
+>   the user's own. The authors accept no responsibility for misuse.
 
-## 项目架构
+## Architecture
 
 ```
-src/main.cpp                         组装层: 硬件初始化和组件编排
-├── src/Controller/                  控制层: API 调度 + Transmitter + Web + 串口
-│   ├── API.h / .cpp                 (命令调度: CmdRequest → CmdResponse 统一分发)
-│   ├── Transmitter.h / .cpp         (Direct TX 控制 + 预编码 + 异步发射调度)
-│   ├── Sweeper.h / .cpp             (追码/追频: 非阻塞状态机, loop() 驱动)
-│   ├── TxQueue.h / .cpp             (FreeRTOS 发射队列: core0 预编码 → txTask)
-│   ├── ConfigStore.h / .cpp         (NVS 配置持久化, magic+version 校验)
-│   ├── LogRingBuffer.h / .cpp       (环形发射日志)
-│   ├── ProtocolTypes.h              (协议枚举单一来源: POCSAG/FLEX/PHASE/TONE/MSG)
-│   ├── WebServer.h / .cpp           (REST API + LittleFS 静态文件)
-│   └── SerialConsole.h / .cpp       (串口命令行: 行解析 + 命令分发)
-├── src/WiFiManager/                 WiFi 管理: AP 配网 / STA 连接 / NVS 持久化
+src/main.cpp                         Composition layer: hardware init and component wiring
+├── src/Controller/                  Control layer: API dispatch + Transmitter + Web + serial
+│   ├── API.h / .cpp                 (Command dispatch: CmdRequest → CmdResponse)
+│   ├── Transmitter.h / .cpp         (Direct TX control + pre-encoding + async scheduling)
+│   ├── Sweeper.h / .cpp             (Address/frequency sweep: non-blocking FSM driven by loop())
+│   ├── TxQueue.h / .cpp             (FreeRTOS TX queue: core0 pre-encode → txTask)
+│   ├── ConfigStore.h / .cpp         (NVS persistence, magic+version checked)
+│   ├── LogRingBuffer.h / .cpp       (TX log ring buffer)
+│   ├── ProtocolTypes.h              (Single source for protocol enums: POCSAG/FLEX/PHASE/TONE/MSG)
+│   ├── WebServer.h / .cpp           (REST API + LittleFS static files)
+│   └── SerialConsole.h / .cpp       (Serial CLI: line parsing + command dispatch)
+├── src/WiFiManager/                 WiFi: AP provisioning / STA connection / NVS persistence
 │   └── WiFiManager.h / .cpp
-├── lib/Pocsag/                      编码层: POCSAG 协议 (含 GB2312 中文)
+├── lib/Pocsag/                      Encoding layer: POCSAG protocol (GB2312 Chinese included)
 │   └── Pocsag.h / Pocsag.cpp
-├── lib/Flex/                        编码层: FLEX 协议
-│   ├── flex.h              (C 单头文件编码库)
-│   └── FlexEncoder.h / .cpp (C++ 封装)
-├── lib/si4463/                      Si4463 SPI 射频芯片驱动
-│   ├── Si446x.h / .cpp (Zak Kemble 移植版, ESP32-S3 适配, 跨核 SPI 互斥)
-│   └── radio_config.h   (WDS 3.2.11.0 生成)
-├── lib/Charset/                     字符集: UTF-8 → GB2312 转换
+├── lib/Flex/                        Encoding layer: FLEX protocol
+│   ├── flex.h                       (single-header C encoder library)
+│   └── FlexEncoder.h / .cpp         (C++ wrapper)
+├── lib/si4463/                      Si4463 SPI transceiver driver
+│   ├── Si446x.h / .cpp              (Zak Kemble port, ESP32-S3 adapted, cross-core SPI mutex)
+│   └── radio_config.h               (generated by WDS 3.2.11.0)
+├── lib/Charset/                     Charset: UTF-8 → GB2312 conversion
 │   └── Charset.h / .cpp
-├── data/                            Web 前端资源 (LittleFS)
-│   ├── index.html                   (SPA 控制面板)
+├── data/                            Web frontend assets (LittleFS)
+│   ├── index.html                   (SPA control panel)
 │   ├── css/style.css
 │   ├── css/terminal.min.css
 │   └── js/
-│       ├── main.js                  (应用入口 + 状态轮询)
-│       ├── api-client.js            (REST API 客户端)
-│       ├── config-panel.js          (配置面板 + Sweeper 控件)
-│       ├── terminal-view.js         (终端视图 + 消息发送)
-│       └── wifi-modal.js            (WiFi 配网弹窗)
-└── tools/                           验证工具 (不参与固件编译)
-    ├── verify_pocsag_batch.py       (POCSAG 批量编码 BCH 校验 + 地址解码)
-    ├── verify_flex_batch.py         (FLEX 批量编码帧结构校验)
-    ├── verify_sweep_ui.js           (前端 Sweeper UI 状态机)
-    ├── verify_sweeper_state.sh      (Sweeper 状态转换)
-    ├── verify_logring.sh            (LogRingBuffer 边界行为)
-    ├── verify_serial_sweep.sh       (串口 SWEEP 命令交互)
-    └── *-test/                      (C++ harness, 如 sweeper-test 52 checks)
+│       ├── main.js                  (app entry + status polling)
+│       ├── api-client.js            (REST API client)
+│       ├── config-panel.js          (config panel + Sweeper controls)
+│       ├── terminal-view.js         (terminal view + message TX)
+│       └── wifi-modal.js            (WiFi provisioning modal)
+└── tools/                           Verification tools (not part of the firmware build)
+    ├── verify_pocsag_batch.py       (POCSAG batch BCH check + address decode)
+    ├── verify_flex_batch.py         (FLEX batch frame-structure check)
+    ├── verify_sweep_ui.js           (frontend Sweeper UI state machine)
+    ├── verify_sweeper_state.sh      (Sweeper state transitions)
+    ├── verify_logring.sh            (LogRingBuffer boundary behaviour)
+    ├── verify_serial_sweep.sh       (serial SWEEP command interaction)
+    └── *-test/                      (C++ harnesses, e.g. sweeper-test with 52 checks)
 ```
 
-### 数据流
+### Data flow
 
 ```
-[Web UI / 串口 / WiFi]
-  → CmdRequest (统一命令结构)
-    → api_dispatch() 命令调度器
-      → Transmitter::send(Config)          // 统一入口, 自动路由编码器
+[Web UI / Serial / WiFi]
+  → CmdRequest (unified command struct)
+    → api_dispatch() command dispatcher
+      → Transmitter::send(Config)          // single entry point, routes the encoder
         → [POCSAG] PocsagEncoder::encode() + GB.get() GB2312
-        → [FLEX]   FlexEncoder::encode()  + GB.get() GB2312
-      → sendPocsagRaw() / sendFlexRaw()      // 深拷贝入队
-  → txTask (core 1) 异步发射:
-      → Transmitter::enterTx()               // Si446x_startDirectTX()
-      → sendCodewords() / sendBytes()        // GPIO0 bit-banging
-      → Transmitter::exitTx()                // Si446x_stopTX()
-  → CmdResponse → 序列化返回
-  → Si4463 直接 FSK 调制发射 (Direct TX Mode, 非 FIFO)
+        → [FLEX]   FlexEncoder::encode()   + GB.get() GB2312
+      → sendPocsagRaw() / sendFlexRaw()    // deep-copy into the queue
+  → txTask (core 1) transmits asynchronously:
+      → Transmitter::enterTx()             // Si446x_startDirectTX()
+      → sendCodewords() / sendBytes()      // GPIO0 bit-banging
+      → Transmitter::exitTx()              // Si446x_stopTX()
+  → CmdResponse → serialized back to the caller
+  → Si4463 direct FSK modulation (Direct TX Mode, not FIFO)
 ```
 
-## WiFi 与 Web 控制面板
+## WiFi and the web control panel
 
-### WiFi 模式
+### WiFi modes
 
-设备启动时自动选择：
+Selected automatically at boot:
 
-1. **有保存的凭据** → STA 模式连接路由器（10s 超时），hostname `BeeperTX.local`
-2. **连接失败 / 无凭据** → AP 模式回退，SSID `BeeperTX`（开放网络），IP `192.168.4.1`
+1. **Saved credentials present** → STA mode, connect to the router (10 s
+   timeout), hostname `BeeperTX.local`
+2. **Connection failed / no credentials** → fall back to AP mode, SSID `BeeperTX`
+   (open network), IP `192.168.4.1`
 
-AP 模式下内置 Captive Portal DNS，手机连接后自动弹出配网页面。
-凭据通过 NVS (Preferences) 持久化保存，配网成功后自动重启进入 STA 模式。
+In AP mode a captive-portal DNS server is active, so the provisioning page pops
+up automatically on a phone. Credentials are persisted in NVS (Preferences) and
+the device reboots into STA mode after successful provisioning.
 
-### Web 控制面板
+### Web control panel
 
-浏览器访问 `http://BeeperTX.local/`（STA 模式）或 `http://192.168.4.1/`（AP 模式），
-提供完整的设备控制功能：
+Open `http://BeeperTX.local/` (STA mode) or `http://192.168.4.1/` (AP mode) in a
+browser for full device control:
 
-- **配置面板**: 协议选择 (POCSAG/FLEX)、相位、铃音、消息类型、频率、码率、功率、地址、Mail Drop
-  (FLEX 下自动隐藏 Phase/Tone, 显示 Mail Drop; 频率以 MHz 输入; 码率选项随编码切换)
-- **消息发送**: 输入 UTF-8 消息文本，一键发射
-- **追码/追频 (Sweeper)**: Addr/Freq 模式切换、START/STOP、实时进度 (当前值/总数/批次区间)
-- **WiFi 配网**: 扫描附近网络、输入密码、连接并重启
-- **实时状态**: 连接状态指示灯、IP 地址、累计发射次数
-- **预设管理**: 保存/加载发射配置预设 (LocalStorage)
+- **Configuration panel**: protocol (POCSAG/FLEX), phase, tone, message type,
+  frequency, baud rate, power, address, Mail Drop (Phase/Tone are hidden under
+  FLEX and Mail Drop is shown instead; frequency is entered in MHz; baud options
+  follow the selected encoding)
+- **Message TX**: type a UTF-8 message and transmit it with one click
+- **Sweeper**: Addr/Freq mode switch, START/STOP, live progress (current value /
+  total / batch range)
+- **WiFi provisioning**: scan nearby networks, enter a password, connect and
+  reboot
+- **Live status**: connection indicator, IP address, cumulative TX count
+- **Presets**: save/load transmit presets (LocalStorage)
 
-### REST API 端点
+### REST API endpoints
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/ping` | 心跳检测 |
-| GET | `/api/status` | 设备状态 (频率/功率/芯片信息/运行时间/发射次数) |
-| GET | `/api/config` | 当前发射配置 |
-| POST | `/api/config` | 设置发射配置 (JSON body) |
-| POST | `/api/transmit` | 发射消息 |
-| POST | `/api/reset` | 重启设备 |
-| GET | `/api/wifi/status` | WiFi 状态 (不触发扫描) |
-| GET | `/api/wifi/scan` | 扫描附近 WiFi 网络 |
-| POST | `/api/wifi` | 设置 WiFi 凭据 (JSON: `{"ssid":"...","password":"..."}`) |
-| GET | `/api/log` | 最近发射日志 |
-| POST | `/api/sweep/start` | 启动追码/追频 (JSON: `{"mode":"addr"\|"freq"}`, 参数取当前配置) |
-| POST | `/api/sweep/stop` | 停止扫描 (追频时延迟恢复起始频率) |
-| GET | `/api/sweep/status` | 扫描状态 (running/mode/current/total/done/batchStart/batchEnd) |
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/ping` | Heartbeat |
+| GET | `/api/status` | Device status (frequency / power / chip info / uptime / TX count) |
+| GET | `/api/config` | Current transmit configuration |
+| POST | `/api/config` | Update the transmit configuration (JSON body) |
+| POST | `/api/transmit` | Transmit a message |
+| POST | `/api/reset` | Reboot the device |
+| GET | `/api/wifi/status` | WiFi status (does not trigger a scan) |
+| GET | `/api/wifi/scan` | Scan nearby WiFi networks |
+| POST | `/api/wifi` | Set WiFi credentials (JSON: `{"ssid":"...","password":"..."}`) |
+| GET | `/api/log` | Recent TX log |
+| POST | `/api/sweep/start` | Start an address/frequency sweep (JSON: `{"mode":"addr"\|"freq"}`, parameters come from the current config) |
+| POST | `/api/sweep/stop` | Stop the sweep (frequency is restored to the start value after a delay) |
+| GET | `/api/sweep/status` | Sweep status (running/mode/current/total/done/batchStart/batchEnd) |
 
-## 串口控制台
+## Serial console
 
-串口波特率 **115200 bps**，使用任何串口终端（`pio device monitor`、`screen`、`minicom` 等）连接即可交互。
+Serial baud rate is **115200 bps**; any serial terminal works (`pio device
+monitor`, `screen`, `minicom`, …).
 
-### 命令格式
+### Command format
 
-所有命令遵循 `<CMD> [key=value ...]\r\n` 格式，不区分大小写，响应以 `OK` 或 `ERR` 开头。
+All commands follow `<CMD> [key=value ...]\r\n`, are case-insensitive, and
+responses start with `OK` or `ERR`.
 
-| 命令 | 说明 | 示例 |
-|------|------|------|
-| `HELP` | 打印帮助 | `HELP` |
-| `STATUS` | 设备状态（芯片/频率/功率/RSSI/运行时间） | `STATUS` |
-| `CONFIG` | 当前发射配置 | `CONFIG` |
-| `SET` | 修改发射配置 | `SET freq=152675 power=100` |
-| `TX` | 发射消息（可选覆盖消息内容） | `TX` / `TX msg=测试消息` |
-| `WIFI` | WiFi 状态 | `WIFI` |
-| `WIFI` | 设置 WiFi 凭据并重启 | `WIFI ssid=MyWiFi pass=12345678` |
-| `SCAN` | 扫描附近 WiFi 网络 | `SCAN` |
-| `SWEEP` | 启动/查询追码追频 | `SWEEP addr` / `SWEEP freq` / `SWEEP status` |
-| `STOP` | 停止扫描（`SWEEP stop` 别名） | `STOP` |
-| `SAVE` | 将当前发射配置持久化到 NVS（重启后自动恢复） | `SAVE` |
-| `RESET` | 重启设备 | `RESET` |
-| `PING` | 心跳检测 | `PING` |
+| Command | Description | Example |
+|---------|-------------|---------|
+| `HELP` | Print help | `HELP` |
+| `STATUS` | Device status (chip/frequency/power/RSSI/uptime) | `STATUS` |
+| `CONFIG` | Current transmit configuration | `CONFIG` |
+| `SET` | Change transmit parameters | `SET freq=152675 power=100` |
+| `TX` | Transmit (optionally override the message) | `TX` / `TX msg=Hello` |
+| `WIFI` | Show WiFi status | `WIFI` |
+| `WIFI` | Set WiFi credentials and reboot | `WIFI ssid=MyWiFi pass=12345678` |
+| `SCAN` | Scan nearby WiFi networks | `SCAN` |
+| `SWEEP` | Start/query an address or frequency sweep | `SWEEP addr` / `SWEEP freq` / `SWEEP status` |
+| `STOP` | Stop the sweep (alias of `SWEEP stop`) | `STOP` |
+| `SAVE` | Persist the current transmit config to NVS (restored on reboot) | `SAVE` |
+| `RESET` | Reboot the device | `RESET` |
+| `PING` | Heartbeat | `PING` |
 
-### 启动输出
+### Boot output
 
 ```
 ==========================================
@@ -265,11 +296,12 @@ AP 模式下内置 Captive Portal DNS，手机连接后自动弹出配网页面�
   PING                  Heartbeat
 ```
 
-### 命令详解与交互示例
+### Command reference and examples
 
-#### `SAVE` — 持久化配置
+#### `SAVE` — persist the configuration
 
-将当前发射配置写入 ESP32 NVS（命名空间 `beepertx`），重启后由 `api_init()` 自动恢复。
+Writes the current transmit configuration to ESP32 NVS (namespace `beepertx`);
+`api_init()` restores it after a reboot.
 
 ```
 > SET freq=155000 baud=1200
@@ -277,60 +309,63 @@ OK SET
 > SAVE
 OK SAVE: config persisted to NVS
 > RESET
-...（重启）...
+...(reboot)...
 > CONFIG
 freq=155000kHz baud=1200 ...
 ```
 
-#### `PING` — 心跳检测
+#### `PING` — heartbeat
 
-检查设备是否在线，返回系统运行毫秒数，可用于延迟估算。
+Checks that the device is alive and returns the system uptime in milliseconds,
+which is handy for latency estimates.
 
 ```
 > PING
 OK PING uptime=54912
 ```
 
-#### `STATUS` — 设备状态
+#### `STATUS` — device status
 
-读取 Si4463 芯片信息、当前频率、功率、RSSI、累计发射次数和运行时间。
+Reads Si4463 chip information, the current frequency, power, RSSI, cumulative TX
+count and uptime.
 
 ```
 > STATUS
 OK STATUS part=0x4463 rom=6 rev=0 state=3 freq=152675kHz pwr=127 rssi=-120dBm uptime=123s tx=5
 ```
 
-字段说明：
+Field reference:
 
-| 字段 | 含义 |
-|------|------|
-| `part` | Si4463 型号 (0x4463) |
-| `rom` | ROM 版本 (3=B1, 6=C2) |
-| `rev` | 芯片修订版本 |
-| `state` | 射频状态机 (3=READY, 5=TX, 7=RX) |
-| `freq` | 当前锁定频率 (kHz) |
-| `pwr` | PA 功率 (0–127) |
-| `rssi` | 当前 RSSI (dBm) |
-| `uptime` | 系统运行时间 (秒) |
-| `tx` | 累计发射次数 |
+| Field | Meaning |
+|-------|---------|
+| `part` | Si4463 part number (0x4463) |
+| `rom` | ROM version (3=B1, 6=C2) |
+| `rev` | Chip revision |
+| `state` | Radio state machine (3=READY, 5=TX, 7=RX) |
+| `freq` | Current locked frequency (kHz) |
+| `pwr` | PA power (0–127) |
+| `rssi` | Current RSSI (dBm) |
+| `uptime` | Uptime (seconds) |
+| `tx` | Cumulative TX count |
 
-#### `CONFIG` — 查看发射配置
+#### `CONFIG` — show the transmit configuration
 
-显示当前完整的发射参数。
+Displays all current transmit parameters.
 
 ```
 > CONFIG
 OK CONFIG encoding=pocsag phase=norm tone=D msgType=alpha freq=152675kHz pwr=127 baud=1200 addr=1000 msg="BeeperTX OK"
 ```
 
-#### `SET` — 修改发射配置
+#### `SET` — change the transmit configuration
 
-支持一个或多个 `key=value` 参数，空格分隔。未指定的参数保持当前值不变。
+Accepts one or more `key=value` pairs separated by spaces. Omitted parameters
+keep their current values.
 
-支持的参数：
+Supported parameters:
 
-| 参数 | 值范围 | 示例 |
-|------|--------|------|
+| Parameter | Range | Example |
+|-----------|-------|---------|
 | `freq` | 119000–1050000 (kHz) | `freq=153950` |
 | `pwr` | 0–127 | `pwr=100` |
 | `baud` | 512 / 1200 (POCSAG); 1600 / 2400 / 3200 (FLEX) | `baud=2400` |
@@ -339,10 +374,12 @@ OK CONFIG encoding=pocsag phase=norm tone=D msgType=alpha freq=152675kHz pwr=127
 | `phase` | `norm` / `inv` | `phase=inv` |
 | `tone` | `a` / `b` / `c` / `d` | `tone=c` |
 | `msgType` | `num` / `alpha` | `msgType=num` |
-| `mailDrop` | `0` / `1` (仅 FLEX ALPHA 生效) | `mailDrop=1` |
-| `msg` | UTF-8 文本（可含空格） | `msg=测试消息` |
+| `mailDrop` | `0` / `1` (FLEX ALPHA only) | `mailDrop=1` |
+| `msg` | UTF-8 text (may contain spaces) | `msg=Hello world` |
 
-**注意**: `SET` 会立即将频率和功率应用到 Si4463 硬件，其他参数缓存到内存。修改后的配置不会自动持久化，需执行 `SAVE` 写入 NVS。
+**Note**: `SET` applies frequency and power to the Si4463 hardware immediately;
+other parameters are cached in memory. Changes are not persisted automatically —
+run `SAVE` to write them to NVS.
 
 ```
 > SET freq=153950 baud=2400 msg=Hello
@@ -356,38 +393,42 @@ OK CONFIG encoding=pocsag phase=norm tone=D msgType=alpha freq=153950kHz pwr=127
 OK SET
 ```
 
-#### `SET mailDrop=1` — FLEX Mail Drop 消息
+#### `SET mailDrop=1` — FLEX Mail Drop message
 
-Mail Drop 标志仅 FLEX 字母消息 (ALPHA) 生效，置位消息首字 bit20，触发寻呼机的
-Mail Drop 提示行为。设置后 `TX` 发送即为 Mail Drop 消息：
+The Mail Drop flag applies only to FLEX alphanumeric messages (ALPHA): the
+encoder sets bit 20 of the first message word, which triggers the Mail Drop
+notification behaviour on pagers that support it. After setting it, `TX` sends a
+Mail Drop message:
 
 ```
-> SET encoding=flex mailDrop=1 msg=重要通知
+> SET encoding=flex mailDrop=1 msg=Important notice
 OK SET
 > TX
 OK TX count=0
 ```
 
-> `mailDrop=0` 恢复普通消息。POCSAG 无 Mail Drop 概念，该标志不影响 POCSAG 发射。
-> 也可通过 REST API 设置: `POST /api/config` body 含 `"mailDrop":true`。
+> `mailDrop=0` restores normal messages. POCSAG has no Mail Drop concept and the
+> flag does not affect POCSAG transmissions. It can also be set over REST:
+> `POST /api/config` with `"mailDrop":true` in the body.
 
-参数无效时返回错误码：
+Invalid parameters return an error code:
 
 ```
 > SET freq=999999
 ERR SET code=2 detail=-1
 ```
 
-#### `TX` — 发射消息
+#### `TX` — transmit
 
-无参数时使用当前配置的消息内容发射。可指定 `msg=` 临时覆盖消息（不影响已保存的配置）。
+With no arguments the current message is transmitted. `msg=` overrides the
+message for this transmission only (the stored configuration is untouched).
 
 ```
 > TX
 OK TX count=0
 ```
 
-串口会输出发射日志（实际由 `api_loop()` 在后台调度）：
+The serial port prints the TX log (scheduled in the background by `api_loop()`):
 
 ```
 [LOG] TX> POCSAG NRM ALPHA addr=1000 freq=152675kHz baud=1200 pw=127 tone=D "BeeperTX OK"
@@ -402,18 +443,18 @@ OK TX count=0
 ...
 ```
 
-#### `WIFI` — WiFi 状态/配网
+#### `WIFI` — WiFi status / provisioning
 
-**查询状态**（无参数）：
+**Query status** (no arguments):
 
 ```
 > WIFI
 OK WIFI state=CONNECTED
 ```
 
-状态值：`DISCONNECTED` (0)、`CONNECTING` (1)、`CONNECTED` (2)、`AP` (3)
+States: `DISCONNECTED` (0), `CONNECTING` (1), `CONNECTED` (2), `AP` (3)
 
-**设置凭据**：
+**Set credentials**:
 
 ```
 > WIFI ssid=MyWiFi pass=12345678
@@ -421,21 +462,24 @@ OK WIFI saved, connecting...
 Device will reboot in STA mode if connection succeeds.
 ```
 
-凭据保存到 NVS 后自动尝试连接，连接成功后设备会重启进入 STA 模式。
+Credentials are saved to NVS and a connection is attempted; on success the
+device reboots into STA mode.
 
-#### `SCAN` — 扫描 WiFi
+#### `SCAN` — scan WiFi
 
-触发后台 WiFi 扫描并立即返回缓存的扫描结果。结果以 JSON 数组格式显示。
+Triggers a background WiFi scan and immediately returns the cached scan results
+as a JSON array.
 
 ```
 > SCAN
 OK SCAN [{"ssid":"MyWiFi","rssi":-45,"secure":true},{"ssid":"Neighbor","rssi":-78,"secure":true}]
 ```
 
-#### `SWEEP` — 追码/追频
+#### `SWEEP` — address / frequency sweep
 
-启动或查询追码 (地址扫描) / 追频 (频率扫描)，参数可覆盖当前配置。
-详见 [追码/追频 (Sweeper)](#追码追频-sweeper)。
+Starts or queries an address sweep (paging-address scan) or a frequency sweep.
+Parameters may override the current configuration. See
+[Address / frequency sweep (Sweeper)](#address--frequency-sweep-sweeper).
 
 ```
 > SWEEP addr
@@ -448,134 +492,141 @@ OK SWEEP running mode=addr batch=1000-1054 done=55/2096152
 OK STOP sweep stopped
 ```
 
-`STOP` 是 `SWEEP stop` 的别名。追频时停止/结束会自动把频率恢复为起始值。
+`STOP` is an alias for `SWEEP stop`. When a frequency sweep is stopped or
+finishes, the frequency is automatically restored to its start value.
 
-#### `RESET` — 重启设备
+#### `RESET` — reboot
 
 ```
 > RESET
 OK RESET rebooting...
 ```
 
-#### `HELP` — 帮助
+#### `HELP` — help
 
 ```
 > HELP
 ```
-（输出前文完整的帮助文本）
 
-### 错误响应格式
+(Prints the full help text shown above.)
 
-所有命令在失败时返回统一格式：
+### Error response format
+
+Every command returns a uniform error on failure:
 
 ```
 ERR <CMD> code=<N> detail=<M>
 ```
 
-| code | 含义 |
-|------|------|
+| code | Meaning |
+|------|---------|
 | 0 | OK |
-| 1 | 未知命令 |
-| 2 | 参数非法（越界 / 不支持的码率等） |
-| 3 | 设备忙（正在发射中） |
-| 4 | 硬件异常（Si4463 无响应等） |
-| 5 | 内存不足 |
-| 6 | 发射被用户中止 |
+| 1 | Unknown command |
+| 2 | Invalid parameter (out of range / unsupported baud rate, …) |
+| 3 | Device busy (transmitting) |
+| 4 | Hardware fault (Si4463 not responding, …) |
+| 5 | Out of memory |
+| 6 | Transmission aborted by the user |
 
-## 命令系统 (API)
+## Command system (API)
 
-所有外部接口（Web / 串口 / 未来 MQTT 等）共享同一套命令定义：
+Every external interface (web, serial, future MQTT, …) shares the same command
+definitions:
 
 ```
-传输层                    命令调度
-┌──────────┐  序列化    ┌──────────┐
-│ Web JSON │ ────────→  │          │
-│ 串口文本 │ ────────→  │  CmdID   │ → api_dispatch()
-│ MQTT TLV │ ────────→  │  枚举    │       ↓
-└──────────┘            └──────────┘  CmdResponse
+Transport layer              Command dispatch
+┌──────────┐  serialize  ┌──────────┐
+│ Web JSON │ ──────────→ │          │
+│ Serial   │ ──────────→ │  CmdID   │ → api_dispatch()
+│ MQTT TLV │ ──────────→ │   enum   │        ↓
+└──────────┘             └──────────┘  CmdResponse
 ```
 
-命令 ID 枚举 (`API.h`):
+Command ID enum (`API.h`):
 
-| 类别 | 命令 | ID | 说明 |
-|------|------|----|------|
-| 系统 | `CMD_PING` | 0x00 | 心跳检测 |
-| 系统 | `CMD_GET_STATUS` | 0x01 | 读取设备状态 |
-| 系统 | `CMD_GET_CONFIG` | 0x02 | 读取发射配置 |
-| 系统 | `CMD_RESET` | 0x03 | 重启设备 |
-| 配置 | `CMD_SET_CONFIG` | 0x10 | 设置发射配置 |
-| 配置 | `CMD_SAVE_CONFIG` | 0x11 | 保存配置到 NVS (重启自动恢复) |
-| 发射 | `CMD_TRANSMIT` | 0x20 | 发射消息 |
-| 发射 | `CMD_ABORT` | 0x21 | 中止发射 |
-| 查询 | `CMD_GET_LOG` | 0x30 | 读取发射日志 |
-| WiFi | `CMD_SET_WIFI` | 0x40 | 设置 WiFi 凭据 |
-| WiFi | `CMD_SCAN_WIFI` | 0x41 | 扫描 WiFi 网络 |
-| WiFi | `CMD_GET_WIFI_STATUS` | 0x42 | 查询 WiFi 状态 |
-| 扫描 | `CMD_SWEEP_START` | 0x50 | 启动追码/追频 |
-| 扫描 | `CMD_SWEEP_STOP` | 0x51 | 停止扫描 |
-| 扫描 | `CMD_SWEEP_STATUS` | 0x52 | 查询扫描状态 |
+| Category | Command | ID | Description |
+|----------|---------|----|-------------|
+| System | `CMD_PING` | 0x00 | Heartbeat |
+| System | `CMD_GET_STATUS` | 0x01 | Read device status |
+| System | `CMD_GET_CONFIG` | 0x02 | Read transmit configuration |
+| System | `CMD_RESET` | 0x03 | Reboot the device |
+| Config | `CMD_SET_CONFIG` | 0x10 | Set transmit configuration |
+| Config | `CMD_SAVE_CONFIG` | 0x11 | Save configuration to NVS (restored on boot) |
+| TX | `CMD_TRANSMIT` | 0x20 | Transmit a message |
+| TX | `CMD_ABORT` | 0x21 | Abort transmission |
+| Query | `CMD_GET_LOG` | 0x30 | Read the TX log |
+| WiFi | `CMD_SET_WIFI` | 0x40 | Set WiFi credentials |
+| WiFi | `CMD_SCAN_WIFI` | 0x41 | Scan WiFi networks |
+| WiFi | `CMD_GET_WIFI_STATUS` | 0x42 | Query WiFi status |
+| Sweep | `CMD_SWEEP_START` | 0x50 | Start an address/frequency sweep |
+| Sweep | `CMD_SWEEP_STOP` | 0x51 | Stop the sweep |
+| Sweep | `CMD_SWEEP_STATUS` | 0x52 | Query sweep status |
 
-## 发射配置
+## Transmit configuration
 
-通过 Web 面板、串口命令或 API 均可动态修改以下参数（无需重新编译）：
+The following parameters can be changed at runtime from the web panel, the
+serial console or the API (no recompilation):
 
-| 参数 | 范围 | 默认值 | 说明 |
-|------|------|--------|------|
-| encoding | POCSAG / FLEX | POCSAG | 编码协议 |
-| freqKHz | 119000–1050000 | 152675 | 发射频率 (kHz) |
-| txPower | 0–127 | 127 | PA 功率 (127=+20dBm) |
-| phase | NORMAL / INVERTED | NORMAL | FSK 相位极性 (仅 POCSAG; FLEX 固定直发) |
-| tone | A / B / C / D | D | POCSAG 铃音/功能码 (仅 POCSAG; FLEX 不适用) |
-| baudRate | POCSAG: 512/1200, FLEX: 1600/2400/3200 | 1200 / 1600 | 码率 (bps, 按编码) |
-| msgType | NUMERIC / ALPHANUMERIC | ALPHANUMERIC | 消息类型 |
-| mailDrop | 0 / 1 | 0 | FLEX Mail Drop 标志 (仅 FLEX ALPHA 生效, 置首字 bit20) |
-| address | 0–2097151 (POCSAG) | 1000 | 寻呼地址 / CAPCODE |
-| message | UTF-8, 最大 1023 字节 | "BeeperTX OK" | 消息内容 (超协议限制在 HTTP 响应前显式拒绝) |
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| encoding | POCSAG / FLEX | POCSAG | Encoding protocol |
+| freqKHz | 119000–1050000 | 152675 | Transmit frequency (kHz) |
+| txPower | 0–127 | 127 | PA power (127 = +20 dBm) |
+| phase | NORMAL / INVERTED | NORMAL | FSK phase polarity (POCSAG only; FLEX always direct) |
+| tone | A / B / C / D | D | POCSAG tone/function code (POCSAG only; N/A for FLEX) |
+| baudRate | POCSAG: 512/1200, FLEX: 1600/2400/3200 | 1200 / 1600 | Bit rate (bps, per encoding) |
+| msgType | NUMERIC / ALPHANUMERIC | ALPHANUMERIC | Message type |
+| mailDrop | 0 / 1 | 0 | FLEX Mail Drop flag (ALPHA only, sets bit 20 of the first word) |
+| address | 0–2097151 (POCSAG) | 1000 | Pager address / CAPCODE |
+| message | UTF-8, max 1023 bytes | "BeeperTX OK" | Message body (messages exceeding protocol limits are rejected before the HTTP response) |
 
-## 追码/追频 (Sweeper)
+## Address / frequency sweep (Sweeper)
 
-非阻塞状态机模块，用于批量扫描寻呼地址（追码）或步进射频频率（追频）。
-由 `main.cpp` 的 `loop()` 驱动，不持有忙等待；实际发射通过 txTask (core 1) 异步完成，
-扫描期间不阻塞 Web/串口响应。
+A non-blocking state-machine module for batch scanning paging addresses (address
+sweep) or stepping the RF frequency (frequency sweep). It is driven by
+`loop()` in `main.cpp` and never busy-waits; the actual transmissions are
+performed asynchronously by `txTask` (Core 1), so web and serial remain
+responsive throughout.
 
-### 两种模式
+### The two modes
 
-| 模式 | 行为 |
-|------|------|
-| **追码 (addr)** | 从 `addrStart` 开始逐地址 +1。POCSAG 每批 55 地址、单前导码连续多 Batch；FLEX 每批 55 地址、一次 ERS 连续多帧，整批一次入队发射 |
-| **追频 (freq)** | 从 `freqStartKHz` 开始按 `freqStepKHz` (默认 25kHz) 步进，每步完整发射当前地址 + 频率值消息；到达 `freqMaxKHz` (默认 999999kHz) 自动停止，并把频率恢复为起始值 |
+| Mode | Behaviour |
+|------|-----------|
+| **Address sweep (addr)** | Increments the address by one from `addrStart`. POCSAG packs 55 addresses per batch under a single preamble with continuous batches; FLEX packs 55 addresses per batch into one ERS with continuous frames. The whole batch is queued and transmitted at once. |
+| **Frequency sweep (freq)** | Steps from `freqStartKHz` by `freqStepKHz` (default 25 kHz), transmitting the current address plus the frequency value at each step. Stops automatically at `freqMaxKHz` (default 999999 kHz) and restores the frequency to its start value. |
 
-### 参数
+### Parameters
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `mode` | — | `addr` / `freq`（必填） |
-| `addrStart` / `addrEnd` | 当前地址 / 0x1FFFFF | 追码地址区间 |
-| `freqStartKHz` / `freqStepKHz` / `freqMaxKHz` | 当前频率 / 25 / 999999 | 追频区间与步进 |
-| `encoding` / `baud` / `phase` / `tone` / `msgType` | 当前配置 | 发射参数覆盖（-1 = 保持当前） |
-| `interval` | 500 ms | 批次/频率点间隔（下限 50 ms） |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `mode` | — | `addr` / `freq` (required) |
+| `addrStart` / `addrEnd` | current address / 0x1FFFFF | Address sweep range |
+| `freqStartKHz` / `freqStepKHz` / `freqMaxKHz` | current frequency / 25 / 999999 | Frequency sweep range and step |
+| `encoding` / `baud` / `phase` / `tone` / `msgType` | current config | Transmit parameter overrides (-1 = keep current) |
+| `interval` | 500 ms | Delay between batches / frequency points (minimum 50 ms) |
 
-### WebUI
+### Web UI
 
-配置面板底部 Sweep 分组：`Addr`/`Freq` 模式切换 + `START` 按钮，
-运行中显示状态行（模式、当前值、完成进度、当前批次区间）并可点击停止。
-扫描运行期间 WebUI 暂停 `/api/status` 轮询以降低 AsyncTCP 回调负载，
-结束后自动恢复。
+The Sweep group at the bottom of the configuration panel offers an
+`Addr` / `Freq` mode switch and a `START` button. While running it shows a status
+line (mode, current value, progress, current batch range) and can be stopped with
+a click. During a sweep the web UI pauses `/api/status` polling to reduce
+AsyncTCP callback load, and resumes automatically when the sweep ends.
 
 ### REST API
 
 ```
-POST /api/sweep/start   body: {"mode":"addr"} 或 {"mode":"freq"}
+POST /api/sweep/start   body: {"mode":"addr"} or {"mode":"freq"}
                         → {"code":0,"mode":"addr","start":1000}
-POST /api/sweep/stop    → 停止扫描（追频时延迟恢复起始频率）
+POST /api/sweep/stop    → stop the sweep (the frequency is restored after a delay in freq mode)
 GET  /api/sweep/status  → {"code":0,"running":true,"mode":1,"current":1054,
                            "total":2096152,"done":55,"batchStart":1000,"batchEnd":1054}
 ```
 
-`mode`：0=IDLE，1=ADDR_SWEEP，2=FREQ_SWEEP。`batchStart`/`batchEnd` 为当前批次区间
-（非批量时等于 `current`）。
+`mode`: 0=IDLE, 1=ADDR_SWEEP, 2=FREQ_SWEEP. `batchStart`/`batchEnd` describe the
+current batch range (equal to `current` outside batch mode).
 
-### 串口命令
+### Serial commands
 
 ```
 > SWEEP addr
@@ -587,231 +638,238 @@ OK SWEEP mode=freq start=152675kHz step=25kHz max=999999kHz
 > SWEEP status
 OK SWEEP running mode=addr batch=1000-1054 done=55/2096152
 
-> SWEEP stop        # 或 STOP
+> SWEEP stop        # or STOP
 OK STOP sweep stopped
 ```
 
-`SWEEP` 支持 `[START]` 前缀（`SWEEP START addr` 等效 `SWEEP addr`），
-可追加 `encoding=.. baud=.. phase=.. tone=.. msgType=.. interval=..` 覆盖参数。
+`SWEEP` accepts an optional `[START]` prefix (`SWEEP START addr` equals
+`SWEEP addr`) and optional `encoding=.. baud=.. phase=.. tone=.. msgType=..
+interval=..` overrides.
 
-## POCSAG 编码详解
+## POCSAG encoding in detail
 
-### 协议帧结构
+### Frame structure
 
-POCSAG (Post Office Code Standardisation Advisory Group) 每批由同步码字 + 16 帧组成:
+A POCSAG batch consists of a sync codeword followed by 16 frames:
 
 ```
-前导码 (576 bits 交替 1/0)
-  → 同步码字 0x7CD215D8
-  → 帧 0: [地址码字 | 空闲码字 ...]
-  → 帧 1: [消息码字 | 消息码字 ...]
+Preamble (576 bits of alternating 1/0)
+  → Sync codeword 0x7CD215D8
+  → Frame 0: [address codeword | idle codewords ...]
+  → Frame 1: [message codeword | message codeword ...]
   → ...
-  → 帧 15: [空闲码字 ...]
+  → Frame 15: [idle codewords ...]
 ```
 
-### 码字结构 (32-bit)
+### Codeword structure (32-bit)
 
 ```
-地址码字:  0 | 18-bit 地址 | 2-bit 功能码 | 10-bit BCH | 偶校验
-消息码字:  1 | 20-bit 消息片段 | 10-bit BCH | 偶校验
+Address codeword: 0 | 18-bit address | 2-bit function | 10-bit BCH | even parity
+Message codeword: 1 | 20-bit message fragment | 10-bit BCH | even parity
 ```
 
-功能码定义:
+Function codes:
 
-| Func | 模式 | 说明 |
-|------|------|------|
-| 0 (00) | Numeric | 数字消息 (4-bit BCD) |
-| 1 (01) | Tone-only | 仅提示音 |
-| 2 (10) | Alphanumeric | 字母/英文 (CCITT No.5 ASCII) |
-| 3 (11) | Tone-D | 中文字母 (GB2312, 也称 Tone-D) |
+| Func | Mode | Description |
+|------|------|-------------|
+| 0 (00) | Numeric | Numeric message (4-bit BCD) |
+| 1 (01) | Tone-only | Alert tone only |
+| 2 (10) | Alphanumeric | Letters/ASCII (CCITT No.5) |
+| 3 (11) | Tone-D | Chinese alphanumeric (GB2312, a.k.a. Tone-D) |
 
-### Alphanumeric 字母编码 (func=2/3)
+### Alphanumeric encoding (func=2/3)
 
-POCSAG 标准只定义了 7-bit ASCII 字母消息。中文寻呼机使用 GB2312-80 双字节字符集，
-通过**功能位 3 (11)** 激活中文模式，并借助控制字符切换中英文:
+The POCSAG standard only defines 7-bit ASCII alphanumeric messages. Chinese
+pagers use the GB2312-80 double-byte character set, activated by **function code
+3 (11)**, and switch between Chinese and English with control characters:
 
-| 控制字符 | 值 | 含义 |
-|---------|----|------|
-| `\x0E` (Shift Out / SO) | 14 | 切换到 GB2312 中文模式 (两字节配对) |
-| `\x0F` (Shift In / SI) | 15 | 切回 ASCII 英文模式 (单字节) |
-| `\x04` (EOT) | 4 | 消息结束 |
+| Control character | Value | Meaning |
+|-------------------|-------|---------|
+| `\x0E` (Shift Out / SO) | 14 | Switch to GB2312 Chinese mode (pairing two bytes) |
+| `\x0F` (Shift In / SI) | 15 | Switch back to ASCII English mode (single byte) |
+| `\x04` (EOT) | 4 | End of message |
 
-中文模式下，寻呼机将收到的每两个 7-bit 字符配成一对，
-重组为 GB2312-80 编码的中文字符。
+In Chinese mode the pager pairs every two received 7-bit characters and
+reassembles them into a GB2312-80 character.
 
-### 7-bit 位反转编码 (LSB-first)
+### 7-bit bit-reversed encoding (LSB-first)
 
-根据 CCITT No.5 标准，每个字节在 POCSAG 中以 LSB-first 顺序传输:
-
-```
-输入: '1' = 0x31 = 0b00110001
-输出: 7-bit 反转 = 0b1000110 (MSB → LSB 依次为 1,0,0,0,1,1,0)
-
-输入: GB2312 0xB2 = 0b10110010
-输出: 7-bit 反转 = 0b0100110 (bit7 丢弃, 仅传输 bit6..bit0)
-```
-
-### 中英混排编码流程
+Per CCITT No.5, each byte is transmitted LSB-first in POCSAG:
 
 ```
-UTF-8 输入: "ABCD - 简体中文 -"
-  ↓ GB.get() 转换为 GB2312
-GB2312 字节: 41 42 43 44 20 2D 20 BC F2 CC E5 D6 D0 CE C4 20 2D
+Input:  '1' = 0x31 = 0b00110001
+Output: 7-bit reversed = 0b1000110 (MSB → LSB: 1,0,0,0,1,1,0)
 
-  ↓ deCodeAlpha() 处理 (寻呼机默认进入中文模式)
-  ↓ 遍历每个字节:
+Input:  GB2312 0xB2 = 0b10110010
+Output: 7-bit reversed = 0b0100110 (bit 7 dropped; only bits 6..0 sent)
+```
 
-[41] ASCII → 插入 \x0F 切英文 → 7-bit 反转编码
-[42] ASCII → 7-bit 反转编码
+### Mixed Chinese/English encoding flow
+
+```
+UTF-8 input: "ABCD - 简体中文 -"
+  ↓ GB.get() converts to GB2312
+GB2312 bytes: 41 42 43 44 20 2D 20 BC F2 CC E5 D6 D0 CE C4 20 2D
+
+  ↓ deCodeAlpha() runs (pagers start in Chinese mode)
+  ↓ for each byte:
+
+[41] ASCII → insert \x0F (switch to English) → 7-bit reverse encoding
+[42] ASCII → 7-bit reverse encoding
 ...
-[BC] GB2312 → 插入 \x0E 切中文 → 7-bit 反转编码
-[F2] GB2312 → 7-bit 反转编码  ← 与 BC 配成 "简"
+[BC] GB2312 → insert \x0E (switch to Chinese) → 7-bit reverse encoding
+[F2] GB2312 → 7-bit reverse encoding  ← pairs with BC to form "简"
 ...
 
-  ↓ 追加 \x04 (EOT) 结束符
-  ↓ 20-bit 打包 → 消息码字 → POCSAG 基带
-  ↓ 可选反相处理 (invert=true)
+  ↓ append \x04 (EOT) terminator
+  ↓ pack into 20-bit words → message codewords → POCSAG baseband
+  ↓ optional inversion (invert=true)
 ```
 
-### 数字编码 (4-bit BCD, func=0)
+### Numeric encoding (4-bit BCD, func=0)
 
-POCSAG 数字消息使用 4-bit BCD (Binary Coded Decimal) 编码，由 `deCodeNumeric()` 处理。
-与字母消息不同，数字消息使用功能码 func=0，且字符映射遵循 POCSAG 标准:
+POCSAG numeric messages use 4-bit BCD (Binary Coded Decimal), handled by
+`deCodeNumeric()`. Unlike alphanumeric messages they use function code func=0,
+and characters map per the POCSAG standard:
 
-| 输入字符 | BCD 值 | 说明 |
-|---------|--------|------|
-| 0-9 | 0x0-0x9 | 数字 |
-| 空格 | 0xA | SPACE |
-| U | 0xB | 紧急指示字符 |
-| - | 0xD | 连字符 |
-| ) | 0xE | 右括号 |
-| ( | 0xF | 左括号 (对调映射) |
-| 未知字符 | 0xA | → 空格 |
+| Input character | BCD value | Description |
+|-----------------|-----------|-------------|
+| 0-9 | 0x0-0x9 | Digits |
+| Space | 0xA | SPACE |
+| U | 0xB | Urgent indicator |
+| - | 0xD | Hyphen |
+| ) | 0xE | Right bracket |
+| ( | 0xF | Left bracket (swapped mapping) |
+| Unknown | 0xA | → space |
 
-每个 BCD 半字节同样进行 LSB-first 位反转 (`flip4bitOrder`)，
-并在消息末尾用 0xA (SPACE) 填充至 20-bit 字边界。
+Each BCD nibble is also bit-reversed LSB-first (`flip4bitOrder`) and the message
+is padded with 0xA (SPACE) to the 20-bit word boundary.
 
-### 地址与消息字发送顺序修复
+### Address/message word ordering fix
 
-`genSignal()` 确保**地址码字在消息码字之前发送**: 每帧先检查地址是否已发出，
-再填入剩余消息码字，末尾用空闲码字 (`0x7A89C197`) 补齐。
-此前版本可能在地址之前就发送了消息码字，导致部分寻呼机无法正确解码。
+`genSignal()` guarantees that the **address codeword precedes the message
+codewords**: each frame first checks whether the address has been sent, then
+fills the remaining slots with message codewords, padding the tail with idle
+codewords (`0x7A89C197`). Earlier versions could emit message codewords before
+the address, which some pagers could not decode.
 
-### 批量编码 (encodeBatchMulti)
+### Batch encoding (encodeBatchMulti)
 
-`encodeBatchMulti()` 将最多 55 个地址编码为**单前导码连续多 Batch** (ITU-R M.584)：
-前导码只发送一次，消息码字可跨 SYNC 连续延伸，彻底省去逐地址补发的前导码开销。
-Sweeper 追码模式每批调用一次，整批一次入队异步发射。
+`encodeBatchMulti()` encodes up to 55 addresses as **one preamble followed by
+continuous batches** (ITU-R M.584): the preamble is sent once and message
+codewords may extend across SYNC continuously, eliminating the per-address
+preamble overhead entirely. The Sweeper's address mode calls it once per batch,
+queues the whole batch, and transmits it asynchronously.
 
-## FLEX 编码详解
+## FLEX encoding in detail
 
-### 协议帧结构 (1600 bps)
+### Frame structure (1600 bps)
 
-FLEX (FLEX-TD, ARIB STD-43A) 每帧结构:
-
-```
-ERS (紧急重同步, 35 次重复: BS + AR + /BS + /AR)
-  → S1 (位同步: 0xAA 0xAA 0xAA 0xAA + A1 + B + /A1)
-  → FIW (帧信息字: 周期号 0 + 帧号 0)
-  → S2 (/C Block: 块同步)
-  → BIW1 + 地址字段 + 向量字段 + 消息字段 (11 块 × 8 字, 交织)
-```
-
-### 帧内布局
-
-每帧 88 个字，每个字 32-bit BCH(31,21)+偶校验:
+A FLEX frame (FLEX-TD, ARIB STD-43A):
 
 ```
-帧 0:
+ERS (emergency re-sync, 35 repetitions: BS + AR + /BS + /AR)
+  → S1 (bit sync: 0xAA 0xAA 0xAA 0xAA + A1 + B + /A1)
+  → FIW (frame information word: cycle 0 + frame 0)
+  → S2 (/C block: block sync)
+  → BIW1 + address field + vector field + message field (11 blocks × 8 words, interleaved)
+```
+
+### Intra-frame layout
+
+Each frame is 88 words, each word a 32-bit BCH(31,21)+even-parity codeword:
+
+```
+Frame 0:
   ┌───────┬───────┬───────┬──────────────────────────┐
-  │ BIW1  │ 地址  │ 向量  │ 消息字 [0..84]           │
+  │ BIW1  │ Addr  │Vector │ Message words [0..84]    │
   │ word 0│ word 1│ word 2│ word 3..87               │
   └───────┴───────┴───────┴──────────────────────────┘
-  │← 块 0 →│← 块 1 →│← ... →│← 块 10                →
+  │← blk 0 →│← blk 1 →│← ... →│← blk 10              →
 ```
 
-每块 8 个字经**块交织** (Block Interleaving) 处理:
-突发错误只损坏每个字 1 bit，BCH(31,21) 可纠正 2 bit/字。
+Each block's 8 words undergo **block interleaving**, so a burst error corrupts
+only one bit per word — and BCH(31,21) corrects 2 bits per word.
 
-### 向量类型 (Vector Type)
+### Vector types
 
-向量字的 bits 6:4 定义消息类型 (来自 PCD5008 datasheet):
+Bits 6:4 of the vector word define the message type (per the PCD5008 datasheet):
 
-| v2v1v0 | 类型 | 说明 |
-|--------|------|------|
-| 010 | Tone-only | 仅提示音 |
-| 011 | Numeric | 数字 (0-9, -, _, [, ], 空格, U) |
-| 101 | **Alphanumeric** | **字母消息 (中文使用此类型)** |
-| 110 | Hex/Binary | 8-bit 二进制透明传输 |
+| v2v1v0 | Type | Description |
+|--------|------|-------------|
+| 010 | Tone-only | Alert tone only |
+| 011 | Numeric | Numeric (0-9, -, _, [, ], space, U) |
+| 101 | **Alphanumeric** | **Alphanumeric message (Chinese uses this type)** |
+| 110 | Hex/Binary | 8-bit binary transparent transport |
 
-### 中文编码 (Alphanumeric V=101)
+### Chinese encoding (Alphanumeric V=101)
 
-区别于常见的 Hex/Binary 透明模式，国内 FLEX 中文寻呼机使用
-**Alphanumeric 向量类型 (V=101)** 传输中文:
+Unlike the commonly used Hex/Binary transparent mode, Chinese FLEX pagers in
+China carry Chinese text in the **Alphanumeric vector type (V=101)**:
 
-1. UTF-8 消息经 `GB.get()` 转为 GB2312 双字节
-2. GB2312 每个字节的 bit7 被 `& 0x7F` 剥离后放入 7-bit 字段
-3. 寻呼机将所有 7-bit 字节重组为 8-bit 值并配对解码
+1. The UTF-8 message is converted to GB2312 double-byte by `GB.get()`
+2. Bit 7 of each GB2312 byte is stripped with `& 0x7F` and placed in a 7-bit field
+3. The pager reassembles all 7-bit bytes into 8-bit values and decodes them in pairs
 
-### 7-bit 打包 (3 字符/字)
+### 7-bit packing (3 characters per word)
 
-每个 21-bit 数据字存储 3 个 7-bit 字符:
+Each 21-bit data word stores three 7-bit characters:
 
 ```
-字 N: [char0(bit6..0) | char1(bit6..0) | char2(bit6..0)]
-       bits 20..14      bits 13..7       bits 6..0
+Word N: [char0(bits 6..0) | char1(bits 6..0) | char2(bits 6..0)]
+         bits 20..14        bits 13..7        bits 6..0
 ```
 
-`create_alphanumeric_msg()` 逐字打包:
+`create_alphanumeric_msg()` packs word by word:
 
 ```c
 msg_word[word_idx] |= ((uint32_t)msg[i] & 0x7F) << shift;
 shift += 7;
-if (shift == 21) { word_idx++; shift = 0; }  // 满 3 字符 → 写下一字
+if (shift == 21) { word_idx++; shift = 0; }  // 3 chars full → next word
 ```
 
-### 中英混排控制字符 (与 POCSAG 相同机制)
+### Mixed Chinese/English control characters (same mechanism as POCSAG)
 
-国内 FLEX 寻呼机也使用 `\x0E`(SO)/`\x0F`(SI) 控制字符切换中英文，
-与 POCSAG `deCodeAlpha()` 完全一致:
+Chinese FLEX pagers also use the `\x0E`(SO) / `\x0F`(SI) control characters to
+switch between Chinese and English, exactly like POCSAG's `deCodeAlpha()`:
 
 ```
-GB2312 字节流:  BC F2 CC E5 D6 D0 CE C4 20 41 42 43 20 31 32 33
-                        "简体中文字 ABC 123"
+GB2312 byte stream: BC F2 CC E5 D6 D0 CE C4 20 41 42 43 20 31 32 33
+                            "简体中文字 ABC 123"
 
-寻呼机默认中文模式:
-  BC F2 → "简"     (中文配对)
+Pager starts in Chinese mode:
+  BC F2 → "简"     (Chinese pairing)
   CC E5 → "体"
   D6 D0 → "中"
   CE C4 → "文"
 
-  20 41 → 遇见 0x20(空格) — 在上层插入 \x0F 切英文前就已发出
-  ⚠ 0x41('A') 被当作 GB2312 第二字节与 0x20 配对 → 乱码！
+  20 41 → hits 0x20 (space) — already sent before the upper layer inserts \x0F
+  ⚠ 0x41 ('A') is taken as the second GB2312 byte and paired with 0x20 → garbage!
 
-插入控制字符后:
-  BC F2 CC E5 D6 D0 CE C4    → "简体中文" (中文配对)
-  0F 20 41 42 43 20 31 32 33 → 切英文: " ABC 123" (单字节 ASCII)
+After inserting control characters:
+  BC F2 CC E5 D6 D0 CE C4    → "简体中文" (Chinese pairing)
+  0F 20 41 42 43 20 31 32 33 → switch to English: " ABC 123" (single-byte ASCII)
 ```
 
-在 `Transmitter::send()` 中实现:
+Implemented in `Transmitter::send()`:
 
 ```cpp
 static uint8_t mixed[512];
 size_t m = 0;
-bool inChinese = true;  // 寻呼机默认中文模式
+bool inChinese = true;  // pagers start in Chinese mode
 
 for (size_t i = 0; i < gbLen && m < sizeof(mixed) - 8; i++) {
   uint8_t byte = (uint8_t)gbStr[i];
 
-  if (byte >= 0x80) {          // GB2312 中文字节
+  if (byte >= 0x80) {          // GB2312 Chinese byte
     if (!inChinese) {
-      mixed[m++] = 0x0E;       // 切到中文
+      mixed[m++] = 0x0E;       // switch to Chinese
       inChinese = true;
     }
     mixed[m++] = byte;
-  } else {                     // ASCII 字节
+  } else {                     // ASCII byte
     if (inChinese) {
-      mixed[m++] = 0x0F;       // 切到英文
+      mixed[m++] = 0x0F;       // switch to English
       inChinese = false;
     }
     mixed[m++] = byte;
@@ -821,10 +879,11 @@ mixed[m] = '\0';
 encoder.encode(cfg.address, (const char*)mixed, FlexEncoder::ALPHA);
 ```
 
-`\x0E` (0x0E) 和 `\x0F` (0x0F) 都 < 0x80，
-经过 `& 0x7F` 后保持原值，随普通字符一起 7-bit 打包传输。
+Both `\x0E` (0x0E) and `\x0F` (0x0F) are below 0x80, so they survive the
+`& 0x7F` masking unchanged and travel with the ordinary characters in the 7-bit
+packing.
 
-### FLEX 帧字生成流程
+### FLEX frame word generation flow
 
 ```
                       ┌─────────────────┐
@@ -841,96 +900,102 @@ encoder.encode(cfg.address, (const char*)mixed, FlexEncoder::ALPHA);
                │               │               │
                v               v               v
         ┌─────────────────────────────────────────┐
-        │  BCH(31,21) 编码 + 偶校验              │
-        │  encode_word(rev32(dw))                │
-        │  → 每字 32-bit codeword                │
+        │  BCH(31,21) encoding + even parity      │
+        │  encode_word(rev32(dw))                 │
+        │  → 32-bit codeword per word             │
         └────────────────┬────────────────────────┘
                          │
                          v
         ┌─────────────────────────────────────────┐
-        │  块交织 (Block Interleaving)            │
+        │  Block interleaving                     │
         │  interleave_block(0..10)                │
-        │  → 列优先重排位序                       │
+        │  → column-major bit reordering          │
         └────────────────┬────────────────────────┘
                          │
                          v
         ┌─────────────────────────────────────────┐
-        │  字节化输出                              │
+        │  Byte serialization                     │
         │  SAVE_VEC() / SAVE_WORD()               │
-        │  → 同步头 + 帧数据 → uint8_t[]          │
+        │  → sync header + frame data → uint8_t[] │
         └─────────────────────────────────────────┘
 ```
 
-### Mail Drop 标志
+### Mail Drop flag
 
-FLEX 字母消息 (ALPHA, V=101) 可选置位 Mail Drop 标志：编码器将消息首字的 bit20 置位，
-用于触发寻呼机的 Mail Drop 提示行为（寻呼机特定）。WebUI 勾选后随消息一起发送。
+FLEX alphanumeric messages (ALPHA, V=101) may optionally set the Mail Drop flag:
+the encoder sets bit 20 of the first message word to trigger the pager's Mail
+Drop notification behaviour (pager-specific). The web UI sends it along with the
+message when the checkbox is ticked.
 
-### 批量编码 (encodeBatch)
+### Batch encoding (encodeBatch)
 
-`FlexEncoder::encodeBatch()` 将多个 (地址, 消息) 对编码为**一次 ERS + 连续多帧**
-(每帧 frame=0)，帧内多地址多消息，单次发射完成整个批次（相对逐条发送约 23x 提速）。
-Sweeper 追码模式每批 55 地址使用该接口；批量消息总长受 FLEX 单帧 248 字符限制，
-超长会在 HTTP 响应前显式拒绝（不再静默截断）。
+`FlexEncoder::encodeBatch()` encodes multiple (address, message) pairs as **one
+ERS followed by continuous frames** (each frame frame=0), packing multiple
+addresses and messages per frame and sending the whole batch in a single
+transmission (about 23x faster than sending them one at a time). The Sweeper's
+address mode uses it for 55 addresses per batch. The total batch message length is
+bounded by FLEX's 248-character single-frame limit; oversized batches are
+explicitly rejected before the HTTP response (no silent truncation).
 
-## POCSAG vs FLEX 对比
+## POCSAG vs FLEX
 
-| 特性 | POCSAG | FLEX |
-|------|--------|------|
-| 速率 | 512 / 1200 bps | 1600 / 2400 / 3200 bps |
-| 前导码 | 576 bits 交替 1/0 | ERS 35 次 + S1 同步 |
-| 纠错 | BCH(31,21) | BCH(31,21) + 块交织 |
-| 地址 | 21-bit, 单帧 1 地址 | 短/长地址, 帧内多地址 |
-| 数字模式 | func=0, 4-bit BCD | V=011 Numeric |
-| 字母模式 | func=2/3, 7-bit ASCII | V=101 Alphanumeric |
-| 中文方式 | func=3 + `\x0E`/`\x0F` | V=101 alpha + `\x0E`/`\x0F` |
-| 编码器 | Pocsag::deCodeAlpha/Numeric | FlexEncoder (send 内编码, sendFlexRaw 异步发射) |
-| 调制 | 直接 FSK (GPIO0 bit-bang) | 直接 FSK (GPIO0 bit-bang) |
-| 缓冲区 | 静态 (`.bss` 段) | 静态 (`.bss` 段) |
+| Feature | POCSAG | FLEX |
+|---------|--------|------|
+| Bit rate | 512 / 1200 bps | 1600 / 2400 / 3200 bps |
+| Preamble | 576 bits alternating 1/0 | 35 ERS repetitions + S1 sync |
+| Error correction | BCH(31,21) | BCH(31,21) + block interleaving |
+| Address | 21-bit, one address per frame | Short/long addresses, multiple per frame |
+| Numeric mode | func=0, 4-bit BCD | V=011 Numeric |
+| Alphanumeric mode | func=2/3, 7-bit ASCII | V=101 Alphanumeric |
+| Chinese mechanism | func=3 + `\x0E`/`\x0F` | V=101 alpha + `\x0E`/`\x0F` |
+| Encoder | Pocsag::deCodeAlpha/Numeric | FlexEncoder (encoded in send, transmitted by sendFlexRaw) |
+| Modulation | Direct FSK (GPIO0 bit-bang) | Direct FSK (GPIO0 bit-bang) |
+| Buffers | Static (`.bss`) | Static (`.bss`) |
 
-## 构建与烧录
+## Build and flash
 
 ```bash
-pio run                                    # 编译
-pio run --target upload                    # 烧录固件到开发板
-pio run --target uploadfs                  # 烧录 LittleFS 文件系统 (Web 前端)
-pio run --target upload_all                # 烧录固件 + LittleFS (一键)
-pio device monitor -b 115200               # 串口监视器 (115200 bps)
+pio run                                    # build
+pio run --target upload                    # flash the firmware
+pio run --target uploadfs                  # flash the LittleFS image (web frontend)
+pio run --target upload_all                # flash firmware + LittleFS in one go
+pio device monitor -b 115200               # serial monitor (115200 bps)
 ```
 
-### 依赖库
+### Dependencies
 
-| 库 | 版本 | 用途 |
-|---|------|------|
-| ESP32Async/AsyncTCP | ^3.3.2 | Web 服务器底层 TCP |
-| ESP32Async/ESPAsyncWebServer | ^3.7.4 | 异步 HTTP 服务器 |
-| bblanchon/ArduinoJson | ^7.3.0 | JSON 序列化/反序列化 |
+| Library | Version | Purpose |
+|---------|---------|---------|
+| ESP32Async/AsyncTCP | ^3.3.2 | TCP layer under the web server |
+| ESP32Async/ESPAsyncWebServer | ^3.7.4 | Asynchronous HTTP server |
+| bblanchon/ArduinoJson | ^7.3.0 | JSON serialization/deserialization |
 
-### 开发板
+### Board
 
-| 环境 | 说明 |
-|------|------|
-| `luatos-esp32s3` (默认) | ESP32-S3, 16MB Flash, PSRAM, LittleFS |
+| Environment | Description |
+|-------------|-------------|
+| `luatos-esp32s3` (default) | ESP32-S3, 16MB flash, PSRAM, LittleFS |
 
-## 测试与验证工具
+## Tests and verification tools
 
-`tools/` 目录包含独立验证脚本（不参与固件编译），用于回归校验编码器、状态机与 UI：
+The `tools/` directory contains standalone verification scripts (not part of the
+firmware build) for regression-checking the encoders, state machines and UI:
 
-| 工具 | 验证内容 |
-|------|---------|
-| `tools/verify_pocsag_batch.py` | POCSAG 批量编码 BCH 校验 + 地址解码 |
-| `tools/verify_flex_batch.py` | FLEX 批量编码帧结构校验 |
-| `tools/verify_sweep_ui.js` | 前端 Sweeper UI 状态机 |
-| `tools/verify_sweeper_state.sh` | Sweeper 状态转换 |
-| `tools/verify_logring.sh` | LogRingBuffer 边界行为 |
-| `tools/verify_serial_sweep.sh` | 串口 SWEEP 命令交互 |
-| `tools/sweeper-test/` | C++ harness（52 checks） |
-| `tools/serial-test/` | 串口解析 harness |
-| `tools/logring-test/` | 环形缓冲 harness |
+| Tool | Coverage |
+|------|----------|
+| `tools/verify_pocsag_batch.py` | POCSAG batch encoding: BCH check + address decoding |
+| `tools/verify_flex_batch.py` | FLEX batch encoding: frame structure check |
+| `tools/verify_sweep_ui.js` | Frontend Sweeper UI state machine |
+| `tools/verify_sweeper_state.sh` | Sweeper state transitions |
+| `tools/verify_logring.sh` | LogRingBuffer boundary behaviour |
+| `tools/verify_serial_sweep.sh` | Serial SWEEP command interaction |
+| `tools/sweeper-test/` | C++ harness (52 checks) |
+| `tools/serial-test/` | Serial parser harness |
+| `tools/logring-test/` | Ring buffer harness |
 
-## 调试输出
+## Debug output
 
-串口 115200 bps 输出示例:
+Sample serial output at 115200 bps:
 
 ```
 ╔══════════════════════════════════════════╗
@@ -957,28 +1022,37 @@ Web:   http://192.168.1.100/
 BeeperTX started
 ```
 
-## 已知限制
+## Known limitations
 
-1. **忙等待时序**: txTask (core 1) 位敲击期间使用 `busyWaitUntil()` 忙等待实现 µs 级精确时序，
-   约 1–2s (POCSAG) 或 ~10s (FLEX 批量)。代码中每 500 bit `esp_task_wdt_reset()` 喂狗。
-   Sweeper 为非阻塞状态机 (`loop()` 不持有忙等待)，仅 txTask 独占 core 1 发射。
-2. **POCSAG 中文默认模式**: `deCodeAlpha()` 硬编码寻呼机默认中文模式 (`inGB = true`, func=3)，
-   纯 ASCII 消息会额外插入 `\x0F` 控制字符，但对显示无影响。
-3. **FLEX 中文长度限制**: 受 FLEX 单帧最大 248 字符限制，中英混排消息
-   中每个 GB2312 字计 2 字符，控制字符额外开销约 1-2 字节。
-4. **POCSAG 数字消息限制**: 数字消息需寻呼机本身支持 func=0 数字模式；
-   字母消息使用 func=3 中文模式，两种模式不可混用。
-5. **单帧 FLEX (单发)**: 单条消息仍只发单帧 (frame 0)。追码批量 (`FlexEncoder::encodeBatch`) 支持一次 ERS + 连续多帧 (每帧 frame=0), 帧内多地址多消息, v1 仅短地址。
-6. **预编码+异步发射**: `Transmitter::send()` 在调用方上下文 (core 0 / api_loop) 中完成 GB2312 转码和协议编码，
-   编码后的 RAW 数据通过 FreeRTOS 队列提交到 txTask (core 1) 异步发射，
-   避免阻塞 AsyncWebServer 的事件循环。
+1. **Busy-wait timing**: `txTask` (Core 1) uses `busyWaitUntil()` busy-waiting for
+   microsecond-accurate bit-banging, lasting roughly 1–2 s (POCSAG) or ~10 s
+   (FLEX batch). The code calls `esp_task_wdt_reset()` every 500 bits. The
+   Sweeper is a non-blocking state machine (`loop()` never busy-waits); only
+   `txTask` owns Core 1 for transmission.
+2. **POCSAG Chinese default mode**: `deCodeAlpha()` hard-codes the pager's default
+   Chinese mode (`inGB = true`, func=3), so pure-ASCII messages carry an extra
+   `\x0F` control character — harmless for display.
+3. **FLEX Chinese length limit**: bounded by FLEX's 248-character single-frame
+   limit; each GB2312 character counts as 2 characters, and the control
+   characters add roughly 1–2 bytes.
+4. **POCSAG numeric limitation**: numeric messages require a pager that supports
+   func=0 numeric mode; alphanumeric messages use func=3 Chinese mode. The two
+   cannot be mixed.
+5. **Single-frame FLEX (single send)**: a single message still occupies one frame
+   (frame 0). Address-sweep batching (`FlexEncoder::encodeBatch`) supports one ERS
+   plus continuous frames (each frame=0) with multiple addresses and messages per
+   frame; v1 supports short addresses only.
+6. **Pre-encode + async TX**: `Transmitter::send()` performs GB2312 conversion and
+   protocol encoding in the caller's context (Core 0 / `api_loop`), then hands the
+   encoded RAW data to `txTask` (Core 1) through a FreeRTOS queue for asynchronous
+   transmission, keeping the AsyncWebServer event loop free.
 
-## 致谢与引用
+## Credits
 
-本项目基于以下开源项目构建，感谢原作者们的杰出工作：
+This project builds on the following open-source work — many thanks to the
+original authors:
 
-| 项目 | 用途 | 许可 |
-|------|------|------|
-| [Theldus/tinyflex](https://github.com/Theldus/tinyflex) | FLEX 编码库 (`lib/Flex/flex.h`, 单头文件 C 实现) | 公有领域 (Public Domain) |
-| [ZakKemble/Si446x](https://github.com/ZakKemble/Si446x) | Si4463 射频驱动 (`lib/si4463/`, 已适配 ESP32-S3 与跨核 SPI 互斥) | GNU GPL v3 |
-
+| Project | Use | License |
+|---------|-----|---------|
+| [Theldus/tinyflex](https://github.com/Theldus/tinyflex) | FLEX encoder (`lib/Flex/flex.h`, single-header C implementation) | Public Domain |
+| [ZakKemble/Si446x](https://github.com/ZakKemble/Si446x) | Si4463 radio driver (`lib/si4463/`, adapted for ESP32-S3 and cross-core SPI mutexes) | GNU GPL v3 |
